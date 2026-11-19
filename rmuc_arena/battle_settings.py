@@ -12,9 +12,9 @@ FIELDS = json.loads((ROOT / 'config/battle_settings.json').read_text(encoding='u
 
 
 def schema(season):
-    if season not in ('2026', '2027'):
+    if season not in ('2026', '2027', 'rmul2027'):
         raise ValueError('Unknown season')
-    return [f for f in FIELDS if season in f.get('seasons', ['2026', '2027'])]
+    return [f for f in FIELDS if season in f.get('seasons', ['2026', '2027', 'rmul2027'])]
 
 
 def defaults(season):

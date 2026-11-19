@@ -14,7 +14,9 @@ mod training_scenario;
 pub const DT: f64 = 0.05;
 pub const SLOT_IDS: [u32; 6] = [1, 2, 3, 4, 6, 7];
 pub const SLOT_IDS_2027: [u32; 5] = [1, 3, 4, 6, 7];
+pub const SLOT_IDS_RMUL2027: [u32; 3] = [1, 3, 7];
 const ROLES_2027: [&str; 5] = ["heavy", "infantry", "infantry", "aerial", "sentry"];
+const ROLES_RMUL2027: [&str; 3] = ["heavy", "infantry", "sentry"];
 /// 42 mm launchers: the 2026 hero and the 2027 heavy robot's modular launcher.
 pub fn is_42(role: &str) -> bool {
     role == "hero" || role == "heavy"
@@ -168,6 +170,8 @@ pub struct Config {
     pub robot_designs: BTreeMap<String, Value>,
     #[serde(default)]
     pub rulebook_2027: Value,
+    #[serde(default)]
+    pub rulebook_rmul2027: Value,
     #[serde(default)]
     pub seasons: BTreeMap<String, Value>,
 }
@@ -390,6 +394,10 @@ pub struct Robot {
     /// 2027 terrain-crossing buffs held, by kind, until the given time.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub crossing_buffs: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub deaths_count: u32,
+    #[serde(skip)]
+    pub rmul_tunnel_card: Option<(String, String, f64)>,
     /// Aerial robots carried by a 2027 aerial system's hangar.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drones: Vec<season2027::Drone>,
@@ -488,6 +496,8 @@ pub struct Team {
     pub energy_units_left: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launcher_unlock_s: Option<f64>,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub comeback_tier: u32,
 }
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ZoneState {
@@ -586,6 +596,7 @@ pub struct Engine {
     micro_dt: f64,
     /// Rules season: 2026 or 2027.
     pub season: u32,
+    pub season_key: String,
     /// 2027 control positions (outpost and base position of each team).
     pub positions: BTreeMap<String, season2027::PositionState>,
     /// 2027 large rune activations per team (each shrinks the detecting rings).
@@ -885,7 +896,8 @@ impl Engine {
         }
         let arena = conf.maps.get(map).ok_or("Unknown map")?.clone();
         let season_key = arena.season.clone();
-        let season: u32 = season_key.parse().map_err(|_| "Unknown rules season")?;
+        let is_rmul = season_key == "rmul2027";
+        let season: u32 = if is_rmul { 2027 } else { season_key.parse().map_err(|_| "Unknown rules season")? };
         let season_conf = conf.seasons.get(&season_key).cloned().unwrap_or(Value::Null);
         // Every deployed model must pass this season's construction inspection.
         if let Some(ref teams) = lineups {
@@ -902,12 +914,20 @@ impl Engine {
                 }
             }
         }
-        let (slot_ids, roles): (Vec<u32>, Vec<&str>) = if season == 2027 {
+        let (slot_ids, roles): (Vec<u32>, Vec<&str>) = if is_rmul {
+            (SLOT_IDS_RMUL2027.to_vec(), ROLES_RMUL2027.to_vec())
+        } else if season == 2027 {
             (SLOT_IDS_2027.to_vec(), ROLES_2027.to_vec())
         } else {
             (SLOT_IDS.to_vec(), ROLES.to_vec())
         };
-        let rules = if season == 2027 { conf.rulebook_2027.clone() } else { conf.rulebook.clone() };
+        let rules = if is_rmul {
+            conf.rulebook_rmul2027.clone()
+        } else if season == 2027 {
+            conf.rulebook_2027.clone()
+        } else {
+            conf.rulebook.clone()
+        };
         let specs: BTreeMap<String, Spec> = match season_conf.get("specs") {
             Some(v) => serde_json::from_value(v.clone()).map_err(|e| e.to_string())?,
             None => conf.specs.clone(),
@@ -1176,9 +1196,9 @@ impl Engine {
                     },
                     hip_angle: (d["leg_type"] == "serial").then_some(0.0),
                     self_righting: false,
-                    launcher: if season == 2027 && role == "heavy" { "locked".into() } else { String::new() },
+                    launcher: if is_rmul && role == "heavy" { "unlocked".into() } else if season == 2027 && role == "heavy" { "locked".into() } else { String::new() },
                     launcher_progress: 0.0,
-                    posture: if season == 2027 && role == "sentry" { "move".into() } else { String::new() },
+                    posture: if season == 2027 && !is_rmul && role == "sentry" { "move".into() } else { String::new() },
                     posture_enhanced: false,
                     posture_time: [0.0; 3],
                     posture_enhanced_time: [0.0; 3],
@@ -1186,6 +1206,8 @@ impl Engine {
                     supply_grants_taken: 0,
                     respawned_at: 0.0,
                     crossing_buffs: BTreeMap::new(),
+                    deaths_count: 0,
+                    rmul_tunnel_card: None,
                     drones: if season == 2027 && role == "aerial" {
                         season2027::make_drones(team, slot, d, &arena)
                     } else {
@@ -1199,52 +1221,54 @@ impl Engine {
         let base_hp = rules["structures"]["base_hp"].as_f64().unwrap_or(5000.0);
         let outpost_hp = rules["structures"]["outpost_hp"].as_f64().unwrap_or(1500.0);
         for team in ["red", "blue"] {
-            let b = arena.bases[team];
-            let o = arena.outposts[team];
-            bases.insert(
-                team.into(),
-                Base {
-                    x: b[0],
-                    y: b[1],
-                    z: height_at(&arena, b[0], b[1]),
-                    hp: base_hp,
-                    max_hp: base_hp,
-                    radius: 0.49,
-                    shield_hp: 0.0,
-                    armor_open: false,
-                    armor_open_progress: 0.0,
-                    ever_destroyed: false,
-                    rotation: 0.0,
-                    yaw: structures::base_yaw(team),
-                    rotation_stopped: false,
-                    rotation_stop_at: -1000.0,
-                    rotation_stop_angle: 0.0,
-                    armor_hit_times: vec![-1000.0; 6],
-                    owner: None,
-                },
-            );
-            outposts.insert(
-                team.into(),
-                Base {
-                    x: o[0],
-                    y: o[1],
-                    z: height_at(&arena, o[0], o[1]) - arena.outpost_plinth_m,
-                    hp: outpost_hp,
-                    max_hp: outpost_hp,
-                    radius: 0.30,
-                    shield_hp: 0.0,
-                    armor_open: true,
-                    armor_open_progress: 1.0,
-                    ever_destroyed: false,
-                    rotation: 0.0,
-                    yaw: 0.0,
-                    rotation_stopped: false,
-                    rotation_stop_at: -1000.0,
-                    rotation_stop_angle: 0.0,
-                    armor_hit_times: vec![-1000.0; 6],
-                    owner: (season == 2027).then(|| team.to_string()),
-                },
-            );
+            if let Some(&b) = arena.bases.get(team) {
+                bases.insert(
+                    team.into(),
+                    Base {
+                        x: b[0],
+                        y: b[1],
+                        z: height_at(&arena, b[0], b[1]),
+                        hp: base_hp,
+                        max_hp: base_hp,
+                        radius: 0.49,
+                        shield_hp: 0.0,
+                        armor_open: false,
+                        armor_open_progress: 0.0,
+                        ever_destroyed: false,
+                        rotation: 0.0,
+                        yaw: structures::base_yaw(team),
+                        rotation_stopped: false,
+                        rotation_stop_at: -1000.0,
+                        rotation_stop_angle: 0.0,
+                        armor_hit_times: vec![-1000.0; 6],
+                        owner: None,
+                    },
+                );
+            }
+            if let Some(&o) = arena.outposts.get(team) {
+                outposts.insert(
+                    team.into(),
+                    Base {
+                        x: o[0],
+                        y: o[1],
+                        z: height_at(&arena, o[0], o[1]) - arena.outpost_plinth_m,
+                        hp: outpost_hp,
+                        max_hp: outpost_hp,
+                        radius: 0.30,
+                        shield_hp: 0.0,
+                        armor_open: true,
+                        armor_open_progress: 1.0,
+                        ever_destroyed: false,
+                        rotation: 0.0,
+                        yaw: 0.0,
+                        rotation_stopped: false,
+                        rotation_stop_at: -1000.0,
+                        rotation_stop_angle: 0.0,
+                        armor_hit_times: vec![-1000.0; 6],
+                        owner: (season == 2027).then(|| team.to_string()),
+                    },
+                );
+            }
         }
         let zones = arena
             .zones
@@ -1286,14 +1310,14 @@ impl Engine {
                 (
                     "red".into(),
                     Team {
-                        level_cap: 5,
+                        level_cap: if is_rmul { 1 } else { 5 },
                         ..Default::default()
                     },
                 ),
                 (
                     "blue".into(),
                     Team {
-                        level_cap: 5,
+                        level_cap: if is_rmul { 1 } else { 5 },
                         ..Default::default()
                     },
                 ),
@@ -1331,6 +1355,7 @@ impl Engine {
             micro_time: 0.0,
             micro_dt: DT,
             season,
+            season_key,
             positions: BTreeMap::new(),
             rune_large_count: BTreeMap::new(),
         };
@@ -1367,10 +1392,15 @@ impl Engine {
     pub fn time(&self) -> f64 {
         (((self.tick as f64 * DT) + self.micro_time) * 1e9).round() / 1e9
     }
+    pub fn is_rmul(&self) -> bool {
+        self.season_key == "rmul2027"
+    }
     fn roster(&self) -> Value {
         if self.robots.iter().any(|r| r.model_slot.is_some()) {
             json!({"red":self.robots.iter().filter(|r|r.team=="red").map(|r|r.slot).collect::<Vec<_>>(),
                    "blue":self.robots.iter().filter(|r|r.team=="blue").map(|r|r.slot).collect::<Vec<_>>()})
+        } else if self.is_rmul() {
+            json!(SLOT_IDS_RMUL2027)
         } else if self.season == 2027 {
             json!(SLOT_IDS_2027)
         } else {
@@ -1378,7 +1408,9 @@ impl Engine {
         }
     }
     pub fn rules_profile(&self) -> &'static str {
-        if self.season == 2027 {
+        if self.is_rmul() {
+            "rmul-2027-v1.0.0-arena-v1"
+        } else if self.season == 2027 {
             "rmuc-2027-v1.0.0-arena-v1"
         } else {
             "rmuc-2026-v1.0.0-arena-v3"
@@ -1411,7 +1443,7 @@ impl Engine {
         "status":self.status,"winner":self.winner,"reason":self.reason,"robots":self.robots,
         "bases":self.base_snapshots(),"outposts":self.outpost_snapshots(),"runes":self.rune_snapshots(),"assemblies":self.assembly_snapshots(),"roster":roster,"teams":self.teams,"zones":self.zones,"projectiles":self.projectiles,"events":self.events});
         if self.season == 2027 {
-            frame["season"] = json!("2027");
+            frame["season"] = json!(self.season_key);
             frame["positions"] = self.position_snapshots();
         }
         frame
@@ -1728,7 +1760,7 @@ impl Engine {
             "robots":friends,"robot_models":observed_models,"enemies":enemies,"bases":self.base_snapshots(),"outposts":self.outpost_snapshots(),"runes":self.observed_runes(team,&observers),"assemblies":self.assembly_snapshots(),"rulebook_rules":self.public_rule_summary(),"simulation_assumptions":self.sim,"roster":self.roster(),"teams":self.observed_teams(team),"zones":self.zones,
             "projectiles":bullets,"vision":vision,"specs":self.specs,"referee":self.referee_telemetry(team)});
         if self.season == 2027 {
-            observation["season"] = json!("2027");
+            observation["season"] = json!(self.season_key);
             observation["positions"] = self.position_snapshots();
             observation["enemy_drones"] = json!(enemy_drones);
             // Table 5-19: the same lambda the referee feed shows, with the resolved budgets a
@@ -2019,8 +2051,8 @@ impl Engine {
             .map(|w| (w.rotation.cos(), w.rotation.sin()))
             .collect();
         let mut covers: Vec<(Wall, f64, f64)> = Vec::new();
-        for team in ["red", "blue"] {
-            for cover in structures::covers(&self.bases[team]) {
+        for b in self.bases.values() {
+            for cover in structures::covers(b) {
                 let (c, s) = (cover.rotation.cos(), cover.rotation.sin());
                 covers.push((cover, c, s));
             }
@@ -2030,7 +2062,8 @@ impl Engine {
         // plates, outpost, team index, structure still standing, owner is red
         let mut armor: Vec<(Vec<structures::Plate>, bool, usize, bool, bool)> = Vec::with_capacity(4);
         for (ti, team) in ["red", "blue"].into_iter().enumerate() {
-            for (outpost, b) in [(false, &self.bases[team]), (true, &self.outposts[team])] {
+            for (outpost, maybe_b) in [(false, self.bases.get(team)), (true, self.outposts.get(team))] {
+                let Some(b) = maybe_b else { continue; };
                 structures.push((b.x, b.y, b.z, outpost));
                 let plates = if self.season == 2027 {
                     Self::structure_plates_2027(b, outpost)

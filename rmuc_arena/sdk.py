@@ -117,6 +117,9 @@ RULES_PROFILE = "rmuc-2026-v1.0.0-arena-v3"
 TEAM_SLOTS_2027 = (1, 3, 4, 6, 7)
 TEAM_SIZE_2027 = 5
 RULES_PROFILE_2027 = "rmuc-2027-v1.0.0-arena-v1"
+TEAM_SLOTS_RMUL2027 = (1, 3, 7)
+TEAM_SIZE_RMUL2027 = 3
+RULES_PROFILE_RMUL2027 = "rmul-2027-v1.0.0-arena-v1"
 
 def _load_rules():
     """Rules and reference field of every season available to this runtime."""
@@ -127,6 +130,8 @@ def _load_rules():
             seasons={'2026':(bundle["rulebook"],bundle["maps"]["rmuc2026"])}
             if 'rulebook_2027' in bundle and 'rmuc2027' in bundle['maps']:
                 seasons['2027']=(bundle['rulebook_2027'],bundle['maps']['rmuc2027'])
+            if 'rulebook_rmul2027' in bundle and 'rmul2027' in bundle['maps']:
+                seasons['rmul2027']=(bundle['rulebook_rmul2027'],bundle['maps']['rmul2027'])
             return seasons,bundle.get('robot_designs',{})
     file = here / "arena.json"
     if file.is_file():
@@ -140,11 +145,12 @@ ARENAS_BY_SEASON = {season: value[1] for season, value in _SEASONS.items()}
 # 2026 strategies read RULES; a 2027 workspace (or the full runtime) also has RULES_2027.
 RULES = RULES_BY_SEASON.get('2026') or next(iter(RULES_BY_SEASON.values()))
 RULES_2027 = RULES_BY_SEASON.get('2027')
+RULES_RMUL2027 = RULES_BY_SEASON.get('rmul2027')
 _REFERENCE_ARENA = ARENAS_BY_SEASON.get('2026') or next(iter(ARENAS_BY_SEASON.values()))
 
 
 def season_of(observation):
-    """'2027' or '2026': the rules season of this match."""
+    """'2027', 'rmul2027' or '2026': the rules season of this match."""
     return observation.get('season') or observation.get('arena', {}).get('season') or '2026'
 
 
@@ -339,6 +345,8 @@ def can_fire(robot):
         return False
     if not robot["alive"] or robot.get("weak") or robot.get("overheated") or robot.get("heat_permanent_lock") or robot.get("overspeed_locked") or robot.get("overspeed_permanent_lock") or robot.get("launcher_fault") or robot.get("red_card"):
         return False
+    if robot["role"]=="heavy" and robot.get("launcher")=="fitted":
+        return robot["ammo"]>0
     heat = 100 if is_42(robot) else 10
     if robot.get("posture")=="attack" and robot.get("posture_enhanced"):heat=0
     return robot["ammo"]>0 and robot["heat"]+heat<=robot["max_heat"]+1e-8
@@ -540,7 +548,8 @@ _NAV_GRAPHS={}
 def _prepare_chapter4(arena,team,folded=True):
     # Roofs are overhead and do not block the route, except that in 2027 only a folded robot
     # fits under the 250-260 mm tunnel roofs; others route around the tunnels.
-    under=folded or arena.get('season')!='2027'
+    is_2027=arena.get('season') in ('2027','rmul2027')
+    under=folded or not is_2027
     key=(arena['layout_revision'],team,under)
     if key in _NAV_GRAPHS:return _NAV_GRAPHS[key]
     margin=.36
@@ -551,7 +560,7 @@ def _prepare_chapter4(arena,team,folded=True):
     for w in walls:
         a=w.get('rotation',0);boxes.append((w['x']+w['w']/2,w['y']+w['h']/2,w['w']/2+margin,w['h']/2+margin,math.cos(a),math.sin(a)))
     # RMUC 2027 outposts stand on the central deck beside its kerb: route around their pedestals.
-    if arena.get('season')=='2027':
+    if is_2027:
         for x,y in arena['outposts'].values():boxes.append((x,y,.34+margin,.34+margin,1.0,0.0))
     # A small spatial index keeps height checks bounded during decision calls.
     tiles={}
@@ -569,7 +578,7 @@ def _prepare_chapter4(arena,team,folded=True):
         h=0
         for t in tiles.get((math.floor(x),math.floor(y)),[]):
             if t['x']-1e-8<=x<=t['x']+t['w']+1e-8 and t['y']-1e-8<=y<=t['y']+t['h']+1e-8 and point_in_polygon(x,y,t['polygon']):h=max(h,_terrain_surface(t,x,y))
-        h+=min(y,15-y)*math.tan(math.radians(1.5))
+        h+=max(0,min(y,arena['height']-y))*math.tan(math.radians(arena.get('floor_slope_deg',0)))
         if len(heights)>=32768:heights.clear()
         heights[key]=h
         return h
@@ -663,7 +672,7 @@ def _prepare_chapter4(arena,team,folded=True):
         for x in (-hw-.04,hw+.04):
             for y in (-hh-.04,hh+.04):
                 p=(cx+x*c-y*s,cy+x*s+y*c)
-                if .37<p[0]<27.63 and .37<p[1]<14.63:nodes.append(p)
+                if .37<p[0]<arena['width']-.37 and .37<p[1]<arena['height']-.37:nodes.append(p)
     edges=[[] for _ in nodes]
     for i,a in enumerate(nodes):
         for j in range(i):
@@ -700,7 +709,7 @@ def _chapter4_navigate(robot,point,arena):
         for near_start in ((guarded,set(guarded)) if guarded else (guarded,)):
             ignore={**near_start,**dict.fromkeys(near_goal)} if isinstance(near_start,dict) else near_start|near_goal
             if clear(start,goal,ignore,strict):return _square_to_bumps(robot,goal,arena)
-            step=_route(graph,start,goal,near_start,near_goal,strict,.3 if arena.get('season')=='2027' else 0)
+            step=_route(graph,start,goal,near_start,near_goal,strict,.3 if arena.get('season') in ('2027','rmul2027') else 0)
             if step is not None:return _square_to_bumps(robot,nodes[step],arena)
     return (0.0,0.0)
 
@@ -799,7 +808,7 @@ def _route(graph,start,goal,near_start,near_goal,strict,reached=0):
 for _arena in ARENAS_BY_SEASON.values():
     if _arena.get('layout_revision'):
         for _team in ('red','blue'):
-            for _folded in ((False,True) if _arena.get('season')=='2027' else (True,)):_prepare_chapter4(_arena,_team,_folded)
+            for _folded in ((False,True) if _arena.get('season') in ('2027','rmul2027') else (True,)):_prepare_chapter4(_arena,_team,_folded)
 
 
 def resource_pickup_point(robot,arena):
@@ -881,8 +890,8 @@ def hostile_plates(observation, kind):
     this team and still standing) or 'base' (the enemy base)."""
     team=observation['team'];enemy='blue' if team=='red' else 'red'
     if kind=='base':
-        base=observation['bases'][enemy]
-        return base.get('armor_plates',[]) if base['hp']>0 else []
+        base=observation['bases'].get(enemy)
+        return base.get('armor_plates',[]) if base and base['hp']>0 else []
     plates=[]
     for owner,outpost in observation['outposts'].items():
         if outpost['hp']>0 and outpost.get('owner',owner)!=team:plates+=outpost.get('armor_plates',[])

@@ -298,12 +298,13 @@ impl PhysicsWorld {
             righting_since: Vec::new(),
             right_goal: Vec::new(),
             roll_sign: Vec::new(),
-            season: arena.season.parse().unwrap_or(2026),
+            season: if arena.season == "rmul2027" { 2027 } else { arena.season.parse().unwrap_or(2026) },
             drone_bodies: Vec::new(),
         };
-        for (a, b) in [(0.0, 7.5), (7.5, 15.0)] {
+        let (w, h) = (arena.width, arena.height);
+        for (a, b) in [(0.0, h / 2.0), (h / 2.0, h)] {
             world.prism(
-                &[[0.0, a], [28.0, a], [28.0, b], [0.0, b]],
+                &[[0.0, a], [w, a], [w, b], [0.0, b]],
                 &[0.0; 4],
                 -0.1,
                 arena,
@@ -374,14 +375,14 @@ impl PhysicsWorld {
                 .build();
             world.colliders.insert(collider);
         }
-        for (x, y, w, h) in [
-            (-0.04, 7.5, 0.08, 15.0),
-            (28.04, 7.5, 0.08, 15.0),
-            (14.0, -0.04, 28.0, 0.08),
-            (14.0, 15.04, 28.0, 0.08),
+        for (x, y, pw, ph) in [
+            (-0.04, h / 2.0, 0.08, h),
+            (w + 0.04, h / 2.0, 0.08, h),
+            (w / 2.0, -0.04, w, 0.08),
+            (w / 2.0, h + 0.04, w, 0.08),
         ] {
             world.colliders.insert(
-                ColliderBuilder::cuboid(w / 2.0, h / 2.0, 1.25)
+                ColliderBuilder::cuboid(pw / 2.0, ph / 2.0, 1.25)
                     .translation(vector![x, y, 1.15])
                     .friction(0.5)
                     .build(),
@@ -2355,7 +2356,8 @@ impl PhysicsWorld {
     }
     pub fn update_base_covers(&mut self, bases: &BTreeMap<String, Base>) {
         for (team, handle, index) in &self.base_covers {
-            let w = structures::covers(&bases[team])[*index].clone();
+            let Some(base) = bases.get(team) else { continue; };
+            let w = structures::covers(base)[*index].clone();
             self.colliders[*handle].set_position(Isometry::new(
                 vector![w.x+w.w/2.0,w.y+w.h/2.0,w.bottom+w.height/2.0], vector![0.0,0.0,w.rotation]));
         }

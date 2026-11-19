@@ -2145,8 +2145,8 @@ impl Engine {
     }
     pub(super) fn base_snapshots(&self) -> Value {
         let mut result = json!(self.bases);
-        for team in ["red", "blue"] {
-            result[team]["armor_plates"] = json!(structures::plates(&self.bases[team], false));
+        for (team, b) in &self.bases {
+            result[team]["armor_plates"] = json!(structures::plates(b, false));
             if self.season == 2027 {
                 // RMUC 2027: every exposed base module accepts 17 mm, 42 mm and aerial impacts.
                 for plate in result[team]["armor_plates"].as_array_mut().unwrap() {
@@ -2159,18 +2159,18 @@ impl Engine {
     }
     pub(super) fn outpost_snapshots(&self) -> Value {
         let mut result = serde_json::to_value(&self.outposts).unwrap();
-        for team in ["red", "blue"] {
+        for (team, o) in &self.outposts {
             if self.season == 2027 {
-                result[team]["armor_plates"] = json!(Self::structure_plates_2027(&self.outposts[team], true));
+                result[team]["armor_plates"] = json!(Self::structure_plates_2027(o, true));
                 for plate in result[team]["armor_plates"].as_array_mut().unwrap() {
                     plate["weakspot"] = json!(false);
                 }
                 result[team]["rebuild"] = Value::Null;
                 continue;
             }
-            result[team]["armor_plates"] = json!(structures::plates(&self.outposts[team], true));
+            result[team]["armor_plates"] = json!(structures::plates(o, true));
             result[team]["rebuild"] = Value::Null;
-            if self.outposts[team].hp > 0.0
+            if o.hp > 0.0
                 || self.teams[team].rebuild_credits == 0
                 || self.time() >= n(&self.rules["structures"], "rebuild_disabled_at_s")
             {
@@ -2249,6 +2249,9 @@ impl Engine {
         })
     }
     pub(super) fn rune_snapshots(&self) -> Value {
+        if !self.arena.rune.is_object() {
+            return json!({});
+        }
         let mut result = serde_json::Map::new();
         for team in ["red", "blue"] {
             let r = &self.runes[team];
@@ -2265,6 +2268,9 @@ impl Engine {
         Value::Object(result)
     }
     pub(super) fn observed_runes(&self, team: &str, observers: &[&Robot]) -> Value {
+        if !self.arena.rune.is_object() {
+            return json!({});
+        }
         let all = self.rune_snapshots();
         let mut own = all[team].clone();
         let visible = observers.iter().any(|r| {
@@ -2295,6 +2301,9 @@ impl Engine {
         dy: f64,
         dz: f64,
     ) -> Option<(f64, usize)> {
+        if !self.arena.rune.is_object() {
+            return None;
+        }
         let yaw = n(&self.arena.rune, "axis_yaw");
         let (nx, ny) = (yaw.cos(), yaw.sin());
         let normal_speed = dx * nx + dy * ny;

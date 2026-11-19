@@ -23,8 +23,8 @@ def initial_model_stats(design,rules,season=None):
     """Level-one preselected referee performance, using the engine's public tables."""
     role=design['role']
     season=season or design.get('season',season_rules.LEGACY_SEASON)
-    if season=='2027':
-        rulebook=rules[rules['seasons']['2027']['rules_key']];specs=rules['seasons']['2027']['specs']
+    if season in ('2027', 'rmul2027'):
+        rulebook=rules[rules['seasons'][season]['rules_key']];specs=rules['seasons'][season]['specs']
         stats=dict(specs[role])
         if role=='heavy':stats.update(rulebook['heavy']['stages'][0])
         elif role=='infantry':

@@ -89,48 +89,66 @@ pub struct PositionState {
     pub owner: String,
     pub kind: String,
     pub zones: Vec<String>,
-    /// "full" or "temporary".
+    /// "full", "temporary", or "none".
     pub control: String,
     pub controller: String,
     /// Seconds toward the pending transition (capture by the other team, or release).
     pub progress: f64,
     pub active: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub team_progress: BTreeMap<String, f64>,
 }
 
 impl Engine {
     pub(super) fn init_2027(&mut self) {
+        let is_rmul = self.is_rmul();
         let positions = self.arena.positions.as_object().cloned().unwrap_or_default();
         for (id, p) in positions {
-            let owner = p["owner"].as_str().unwrap_or("red").to_string();
+            let owner = p["owner"].as_str().unwrap_or("neutral").to_string();
+            let (control, controller) = if owner == "neutral" {
+                ("none".into(), "neutral".into())
+            } else {
+                ("full".into(), owner.clone())
+            };
+            let team_progress = if is_rmul {
+                [("red".into(), 0.0), ("blue".into(), 0.0)].into()
+            } else {
+                BTreeMap::new()
+            };
             self.positions.insert(
                 id,
                 PositionState {
-                    owner: owner.clone(),
+                    owner,
                     kind: p["kind"].as_str().unwrap_or("").into(),
                     zones: p["zones"].as_array().map(|z| z.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
-                    control: "full".into(),
-                    controller: owner,
+                    control,
+                    controller,
                     progress: 0.0,
                     active: Vec::new(),
+                    team_progress,
                 },
             );
         }
+        let initial_control = if is_rmul { n(&self.rules["control"], "initial_control") } else { 0.0 };
         let units = self.rules["assembly"]["units_per_resource_station"].as_u64().unwrap_or(6) as u32;
         for team in ["red", "blue"] {
-            let base = self.bases[team].max_hp;
+            let base = self.bases.get(team).map(|b| b.max_hp).unwrap_or(0.0);
             let t = self.teams.get_mut(team).unwrap();
-            t.control = Some(0.0);
+            t.control = Some(initial_control);
             t.base_lowest_hp = Some(base);
             t.max_base_gap = Some(0.0);
             t.max_control_gap = Some(0.0);
-            t.energy_units_left = Some(units);
-            t.launcher_unlock_s = Some(300.0);
+            t.energy_units_left = Some(if is_rmul { 0 } else { units });
+            t.launcher_unlock_s = Some(if is_rmul { 0.0 } else { 300.0 });
         }
     }
 
     // ---- Attributes -------------------------------------------------------------------
     fn heavy_stage(&self, i: usize) -> usize {
         let r = &self.robots[i];
+        if self.is_rmul() {
+            return usize::from(r.launcher == "installed");
+        }
         let done = &self.teams[&r.team].completed_difficulties;
         if done.contains(&3) || r.launcher == "installed" {
             3
@@ -152,8 +170,10 @@ impl Engine {
                 (n(v, "hp"), n(v, "power_w"), n(v, "max_heat"), n(v, "cooling"))
             }
             "infantry" => {
-                let c = &self.rules["profiles"]["infantry_chassis"][&r.chassis_profile][level];
-                let w = &self.rules["profiles"]["infantry_weapon"][&r.weapon_profile][level];
+                let cs = self.rules["profiles"]["infantry_chassis"][&r.chassis_profile].as_array().unwrap();
+                let ws = self.rules["profiles"]["infantry_weapon"][&r.weapon_profile].as_array().unwrap();
+                let c = &cs[level.min(cs.len() - 1)];
+                let w = &ws[level.min(ws.len() - 1)];
                 (n(c, "hp"), n(c, "power_w"), n(w, "max_heat"), n(w, "cooling"))
             }
             "sentry" => {
@@ -189,7 +209,9 @@ impl Engine {
     }
     /// Logistics coefficient lambda = 1 - lost base HP / 20000 (table 5-19).
     pub(super) fn logistics(&self, team: &str) -> f64 {
-        let b = &self.bases[team];
+        let Some(b) = self.bases.get(team) else {
+            return 1.0;
+        };
         (1.0 - (b.max_hp - b.hp).max(0.0) / n(&self.rules["logistics"], "base_loss_divisor_hp").max(1.0)).clamp(0.05, 1.0)
     }
     /// Table 5-19: robot interaction bandwidth is x·λ bytes per message.
@@ -222,7 +244,47 @@ impl Engine {
             "fpv_resolution": self.fpv_video(team),
         })
     }
+    pub(super) fn rmul_comeback_gap(&self, team: &str) -> f64 {
+        if !self.is_rmul() {
+            return 0.0;
+        }
+        (self.teams[opponent(team)].control.unwrap_or(0.0) - self.teams[team].control.unwrap_or(0.0)).max(0.0)
+    }
+    pub(super) fn check_rmul_comeback(&mut self) {
+        if !self.is_rmul() {
+            return;
+        }
+        let tiers = self.rules["control"]["comeback"].as_array().cloned().unwrap_or_default();
+        for team in ["red", "blue"] {
+            let gap = self.rmul_comeback_gap(team);
+            for (idx, tier) in tiers.iter().enumerate() {
+                let req_tier = (idx + 1) as u32;
+                let req_gap = n(tier, "gap");
+                let coins = n(tier, "coins");
+                if gap >= req_gap - 1e-8 && self.teams[team].comeback_tier < req_tier {
+                    let t = self.teams.get_mut(team).unwrap();
+                    t.comeback_tier = req_tier;
+                    t.resources += coins;
+                    self.event("income", json!({"team":team,"coins":coins,"reason":format!("comeback_{}", req_gap as u32)}));
+                }
+            }
+        }
+    }
+    pub(super) fn apply_rmul_death(&mut self, i: usize) {
+        if !self.is_rmul() {
+            return;
+        }
+        let team = self.robots[i].team.clone();
+        let penalty = n(&self.rules["control"], "death_penalty").max(0.0);
+        if let Some(t) = self.teams.get_mut(&team) {
+            t.control = Some((t.control.unwrap_or(0.0) - penalty).max(0.0));
+        }
+        self.check_rmul_comeback();
+    }
     pub(super) fn gain_xp_2027(&mut self, i: usize, value: f64) {
+        if self.is_rmul() {
+            return;
+        }
         let r = &self.robots[i];
         if r.role != "infantry" || !r.alive || value <= 0.0 || r.level >= self.teams[&r.team].level_cap {
             return;
@@ -330,12 +392,82 @@ impl Engine {
         let retention = n(&self.rules["buffs"]["fortress"], "enemy_timer_retention_s");
         r.fortress_hold > 1e-9
             && self.time() - r.fortress_last_contact <= retention + 1e-8
-            && !self.bases[owner].armor_open
+            && self.bases.get(owner).map(|b| !b.armor_open).unwrap_or(false)
     }
     fn update_positions(&mut self) {
         let now = self.time();
         let capture = n(&self.rules["control"], "capture_s");
         let ids: Vec<String> = self.positions.keys().cloned().collect();
+        if self.is_rmul() {
+            for id in ids {
+                let p = self.positions[&id].clone();
+                let mut active = Vec::new();
+                for team in ["red", "blue"] {
+                    if self.robots.iter().any(|r| {
+                        r.team == team
+                            && r.role != "aerial"
+                            && r.alive
+                            && !r.weak
+                            && p.zones.iter().any(|z| r.zone_contacts.contains_key(z))
+                    }) {
+                        active.push(team.to_string());
+                    }
+                }
+                let holder = p.controller.clone();
+                let s = self.positions.get_mut(&id).unwrap();
+                s.active = active.clone();
+                let mut change: Option<(String, String)> = None;
+                if active.len() == 2 {
+                    // V1.0.0 3.3.4.1: pause both counters while both teams activate.
+                } else if active.len() == 1 {
+                    let team = active[0].clone();
+                    let other = opponent(&team);
+                    let other_prog = s.team_progress.get(other).copied().unwrap_or(0.0);
+                    if other_prog > 0.0 {
+                        let next = (other_prog - DT).max(0.0);
+                        s.team_progress.insert(other.into(), next);
+                        if holder == other && next <= 1e-8 {
+                            change = Some(("none".into(), "neutral".into()));
+                        }
+                    } else {
+                        let cur = s.team_progress.get(team.as_str()).copied().unwrap_or(0.0);
+                        let next = (cur + DT).min(capture);
+                        s.team_progress.insert(team.clone(), next);
+                        if holder != team && next >= capture - 1e-8 {
+                            change = Some(("full".into(), team));
+                        }
+                    }
+                } else {
+                    for team in ["red", "blue"] {
+                        let cur = s.team_progress.get(team).copied().unwrap_or(0.0);
+                        if cur > 0.0 {
+                            let next = (cur - DT).max(0.0);
+                            s.team_progress.insert(team.into(), next);
+                            if holder == team && next <= 1e-8 {
+                                change = Some(("none".into(), "neutral".into()));
+                            }
+                        }
+                    }
+                }
+                s.progress = s.team_progress.values().copied().fold(0.0, f64::max);
+                if let Some((control, controller)) = change {
+                    self.set_position(&id, &control, &controller);
+                }
+            }
+            let drain = n(&self.rules["control"], "zone_drain_per_s").max(1.0);
+            let red_held = self.positions.values().filter(|p| p.controller == "red").count() as f64;
+            let blue_held = self.positions.values().filter(|p| p.controller == "blue").count() as f64;
+            if red_held > 0.0 {
+                let t = self.teams.get_mut("blue").unwrap();
+                t.control = Some((t.control.unwrap_or(0.0) - red_held * drain * DT).max(0.0));
+            }
+            if blue_held > 0.0 {
+                let t = self.teams.get_mut("red").unwrap();
+                t.control = Some((t.control.unwrap_or(0.0) - blue_held * drain * DT).max(0.0));
+            }
+            self.check_rmul_comeback();
+            return;
+        }
         for id in ids {
             let p = self.positions[&id].clone();
             // A team is active on a position while any of its robots activates one of its cards
@@ -452,12 +584,12 @@ impl Engine {
                     self.event("income", json!({"coins":coins,"reason":"schedule"}));
                 }
             }
-            if second == 90 {
+            if second == 90 && !self.is_rmul() {
                 for r in self.runes.values_mut() {
                     r.small_chances += 1;
                 }
             }
-            if [180, 255, 330].contains(&second) {
+            if [180, 255, 330].contains(&second) && !self.is_rmul() {
                 for r in self.runes.values_mut() {
                     r.large_chances += 1;
                 }
@@ -478,6 +610,10 @@ impl Engine {
                 self.robots[i].profile_locked = true;
             }
             let team = self.robots[i].team.clone();
+            if self.robots[i].alive && self.is_rmul() && self.robots[i].weak && now >= self.robots[i].respawned_at + 30.0 - 1e-8 {
+                self.robots[i].weak = false;
+                self.robots[i].weak_until = None;
+            }
             if self.robots[i].alive && self.robots[i].weak_until.map(|until| now + 1e-8 >= until).unwrap_or(false) {
                 self.robots[i].weak = false;
                 self.robots[i].weak_until = None;
@@ -507,8 +643,9 @@ impl Engine {
                 self.settle_heat_power_2027(i);
             }
             if !self.robots[i].alive {
-                let fast = self.contacted_zone_2027(i, "supply", Some(&team))
-                    || self.bases[&team].hp < n(&self.rules["respawn"], "fast_when_base_hp_below");
+                let fast = !self.is_rmul()
+                    && (self.contacted_zone_2027(i, "supply", Some(&team))
+                        || self.bases.get(&team).map(|b| b.hp < n(&self.rules["respawn"], "fast_when_base_hp_below")).unwrap_or(false));
                 let rate = if fast { n(&self.rules["respawn"], "fast_progress_per_s") } else { 1.0 };
                 self.robots[i].respawn_progress += rate * DT;
                 if self.robots[i].respawn_progress + 1e-8 >= self.robots[i].respawn_required {
@@ -524,8 +661,8 @@ impl Engine {
                     r.hp = (r.hp + (r.max_hp * fraction).round()).min(r.max_hp);
                 }
             }
-            // Sentry: 100 allowed rounds per elapsed minute, collected on its supply card.
-            if self.robots[i].role == "sentry" && self.robots[i].alive && !self.robots[i].weak && self.contacted_zone_2027(i, "supply", Some(&team)) {
+            // Sentry: 100 allowed rounds per elapsed minute in RMUC (disabled in RMUL 2027).
+            if !self.is_rmul() && self.robots[i].role == "sentry" && self.robots[i].alive && !self.robots[i].weak && self.contacted_zone_2027(i, "supply", Some(&team)) {
                 let interval = n(&self.rules["sentry"]["supply_grant"], "interval_s").max(1.0);
                 let due = (now / interval).floor() as u32;
                 let taken = self.robots[i].supply_grants_taken;
@@ -540,11 +677,23 @@ impl Engine {
                 self.rulebook_rpc_2027(i, &actions[i].rpc);
             }
         }
-        self.update_rune_motor_2027();
+        if !self.is_rmul() {
+            self.update_rune_motor_2027();
+        }
     }
     fn supply_heal_rate(&self, i: usize) -> f64 {
         let r = &self.robots[i];
         let h = &self.rules["heal"];
+        if self.is_rmul() {
+            let gap = self.rmul_comeback_gap(&r.team);
+            let mut rate = n(h, "supply_ratio_per_s");
+            for tier in self.rules["control"]["comeback"].as_array().into_iter().flatten() {
+                if gap >= n(tier, "gap") - 1e-8 {
+                    rate = rate.max(n(tier, "supply_heal_ratio"));
+                }
+            }
+            return rate;
+        }
         let base = if self.time() >= n(h, "late_start_s") && self.disengaged_2027(i) {
             n(h, "late_disengaged_supply_ratio_per_s")
         } else {
@@ -565,7 +714,7 @@ impl Engine {
     /// Posture effect values: (cooling multiplier, cooling ratio, power ratio, power multiplier,
     /// fixed power, defense, vulnerability, no heat).
     fn posture_effect(&self, r: &Robot) -> Option<Value> {
-        if r.role != "sentry" || r.posture.is_empty() {
+        if self.is_rmul() || r.role != "sentry" || r.posture.is_empty() {
             return None;
         }
         let k = POSTURES.iter().position(|p| *p == r.posture)?;
@@ -614,7 +763,11 @@ impl Engine {
         let now = self.time();
         let base = match r.role.as_str() {
             "heavy" => n(&self.rules["heavy"]["stages"][self.heavy_stage(i)], "power_w"),
-            "infantry" => n(&self.rules["profiles"]["infantry_chassis"][&r.chassis_profile][(r.level.clamp(1, 10) - 1) as usize], "power_w"),
+            "infantry" => {
+                let cs = self.rules["profiles"]["infantry_chassis"][&r.chassis_profile].as_array().unwrap();
+                let idx = ((r.level.clamp(1, 10) - 1) as usize).min(cs.len() - 1);
+                n(&cs[idx], "power_w")
+            }
             "sentry" => n(&self.rules["sentry"]["automatic"], "power_w"),
             _ => 0.0,
         };
@@ -642,6 +795,17 @@ impl Engine {
     /// past the match they are running.
     fn revive_bar_2027(&self, i: usize) -> f64 {
         let b = &self.rules["respawn"];
+        if self.is_rmul() {
+            let base = n(b, "progress_per_death").max(1.0) * self.robots[i].deaths_count.max(1) as f64;
+            let gap = self.rmul_comeback_gap(&self.robots[i].team);
+            let mut scale: f64 = 1.0;
+            for tier in self.rules["control"]["comeback"].as_array().into_iter().flatten() {
+                if gap >= n(tier, "gap") - 1e-8 {
+                    scale = scale.min(n(tier, "respawn_scale"));
+                }
+            }
+            return (base * scale * 100.0).round() / 100.0;
+        }
         let elapsed = self.time().max(0.0);
         (n(b, "progress_base")
             + elapsed / n(b, "elapsed_divisor")
@@ -652,13 +816,14 @@ impl Engine {
         let now = self.time();
         let capacity = self.buffer_capacity_2027();
         let b = self.rules["respawn"].clone();
+        let is_rmul = self.is_rmul();
         let cost = if instant { (now / 60.0).ceil() * 80.0 + self.xp_level(i) as f64 * 20.0 } else { 0.0 };
         let r = &mut self.robots[i];
         r.alive = true;
-        r.hp = (r.max_hp * n(&b, if instant { "instant_hp_ratio" } else { "normal_hp_ratio" })).round();
+        r.hp = (r.max_hp * n(&b, if instant && !is_rmul { "instant_hp_ratio" } else { "normal_hp_ratio" })).round();
         r.weak = true;
-        r.weak_until = instant.then_some(now + n(&b, "instant_invulnerability_s"));
-        r.invulnerable_until = now + if instant { n(&b, "instant_invulnerability_s") } else { n(&b, "normal_invulnerability_s") };
+        r.weak_until = (!is_rmul && instant).then_some(now + n(&b, "instant_invulnerability_s"));
+        r.invulnerable_until = now + if !is_rmul && instant { n(&b, "instant_invulnerability_s") } else { n(&b, "normal_invulnerability_s") };
         r.invulnerable = true;
         r.shield = r.invulnerable_until - now;
         r.respawn_progress = 0.0;
@@ -668,7 +833,8 @@ impl Engine {
         r.buffer_energy_j = capacity;
         r.zone_contacts.clear();
         r.crossing_buffs.clear();
-        if instant {
+        r.rmul_tunnel_card = None;
+        if instant && !is_rmul {
             r.instant_revives += 1;
             r.power_boost_until = now + n(&b, "instant_power_duration_s");
         }
@@ -680,6 +846,9 @@ impl Engine {
     }
     fn can_local_buy_2027(&self, i: usize) -> bool {
         let r = &self.robots[i];
+        if self.is_rmul() {
+            return !r.weak && r.role != "sentry" && self.contacted_zone_2027(i, "supply", Some(&r.team));
+        }
         !r.weak
             && (self.contacted_zone_2027(i, "base", Some(&r.team))
                 || self.contacted_zone_2027(i, "supply", Some(&r.team))
@@ -749,14 +918,14 @@ impl Engine {
             }
             return;
         }
-        if rpc.get("revive").and_then(Value::as_bool) == Some(true) && !r.alive {
+        if !self.is_rmul() && rpc.get("revive").and_then(Value::as_bool) == Some(true) && !r.alive {
             let cost = (now / 60.0).ceil() * 80.0 + self.xp_level(i) as f64 * 20.0;
             if self.teams[&team].resources >= cost {
                 self.teams.get_mut(&team).unwrap().resources -= cost;
                 self.respawn_2027(i, true);
             }
         }
-        if rpc.get("remote_heal").and_then(Value::as_bool) == Some(true) && r.pending_heal.is_none() && self.disengaged_2027(i) {
+        if !self.is_rmul() && rpc.get("remote_heal").and_then(Value::as_bool) == Some(true) && r.pending_heal.is_none() && self.disengaged_2027(i) {
             let cost = 50.0 + (now / 60.0 * 20.0).ceil();
             if self.teams[&team].resources >= cost {
                 self.teams.get_mut(&team).unwrap().resources -= cost;
@@ -764,10 +933,15 @@ impl Engine {
             }
         }
         if let Some(order) = rpc.get("buy_ammo") {
-            let launches = match r.role.as_str() { "heavy" => Some("42mm"), "infantry" | "sentry" => Some("17mm"), _ => None };
+            let launches = match r.role.as_str() {
+                "heavy" => Some("42mm"),
+                "infantry" => Some("17mm"),
+                "sentry" if !self.is_rmul() => Some("17mm"),
+                _ => None,
+            };
             if let (Some(kind), true) = (launches, r.alive) {
                 let remote = order["remote"].as_bool().unwrap_or(false);
-                let allowed = if remote { self.disengaged_2027(i) } else { self.can_local_buy_2027(i) };
+                let allowed = if self.is_rmul() { !remote && self.can_local_buy_2027(i) } else if remote { self.disengaged_2027(i) } else { self.can_local_buy_2027(i) };
                 let v = self.rules["economy"]["ammo"][kind].clone();
                 let batch = n(&v, if remote { "remote_batch" } else { "local_batch" }) as u32;
                 let amount = order["amount"].as_u64().unwrap_or(batch as u64).min(1000) as u32;
@@ -775,7 +949,9 @@ impl Engine {
                 let purchased = if kind == "42mm" { self.teams[&team].purchased_42 } else { self.teams[&team].purchased_17 };
                 let cap = n(&v, "team_purchase_cap") as u32;
                 // Say why an order was refused: a silent refusal looks like a lost key press.
-                let refusal = if !allowed {
+                let refusal = if self.is_rmul() && remote {
+                    Some("RMUL 仅支持在己方补给区兑换允许发弹量".to_string())
+                } else if !allowed {
                     Some(if remote { "远程补给需脱离交战 6 秒".to_string() } else { "需在本方基地 / 补给区 / 制高点或已完全控制的前哨站内".to_string() })
                 } else if amount == 0 || batch == 0 {
                     Some("弹药数量必须大于 0".to_string())
@@ -803,7 +979,7 @@ impl Engine {
                 self.event("ammo_refused", json!({"robot":r.id,"reason":"该型号不能购买弹药"}));
             }
         }
-        if r.role == "sentry" {
+        if r.role == "sentry" && !self.is_rmul() {
             self.posture_rpc(i, rpc);
         }
         if r.role == "heavy" && rpc.get("install_launcher").and_then(Value::as_bool) == Some(true) {
@@ -812,14 +988,16 @@ impl Engine {
             self.robots[i].launcher = self.launcher_idle_state(i);
             self.robots[i].launcher_progress = 0.0;
         }
-        self.request_pickup(i, rpc);
-        self.assembly_rpc_2027(i, rpc);
-        if rpc.get("rune_start").and_then(Value::as_bool) == Some(true)
-            && ["infantry", "sentry"].contains(&r.role.as_str())
-            && r.alive
-            && !r.weak
-        {
-            self.start_rune_2027(&team);
+        if !self.is_rmul() {
+            self.request_pickup(i, rpc);
+            self.assembly_rpc_2027(i, rpc);
+            if rpc.get("rune_start").and_then(Value::as_bool) == Some(true)
+                && ["infantry", "sentry"].contains(&r.role.as_str())
+                && r.alive
+                && !r.weak
+            {
+                self.start_rune_2027(&team);
+            }
         }
     }
     fn posture_rpc(&mut self, i: usize, rpc: &Value) {
@@ -905,6 +1083,18 @@ impl Engine {
     /// Unlock path 2 (5.7.1): after 300 - M/50 - 2N/3 seconds, or as soon as difficulty 3 is done. The
     /// unlock only drives the HUD/strategy surface now — the workbench install is allowed regardless.
     fn update_launcher_unlocks(&mut self) {
+        if self.is_rmul() {
+            for team in ["red", "blue"] {
+                self.teams.get_mut(team).unwrap().launcher_unlock_s = Some(0.0);
+                for k in 0..self.robots.len() {
+                    if self.robots[k].team == team && self.robots[k].launcher == "locked" {
+                        self.robots[k].launcher = "unlocked".into();
+                        self.event("launcher_unlocked", json!({"robot":self.robots[k].id,"team":team}));
+                    }
+                }
+            }
+            return;
+        }
         let now = self.time();
         for team in ["red", "blue"] {
             let other = opponent(team);
@@ -974,19 +1164,52 @@ impl Engine {
                     }
                 }
             }
+            if self.is_rmul() && r.alive && !r.weak {
+                let non_wb: Vec<&Zone> = cards.iter().filter(|z| z.kind != "workbench").collect();
+                if non_wb.iter().any(|z| !matches!(z.kind.as_str(), "supply" | "tunnel_buff")) {
+                    self.robots[i].rmul_tunnel_card = None;
+                } else {
+                    for z in non_wb {
+                        let side = z.owner.as_deref().unwrap_or("");
+                        match self.robots[i].rmul_tunnel_card.clone() {
+                            Some((prev_side, prev_id, t0)) if prev_side == side && prev_id != z.id
+                                && now - t0 <= n(&self.rules["buffs"], "tunnel_window_s") + 1e-8 =>
+                            {
+                                let duration = n(&self.rules["buffs"], "tunnel_duration_s").max(60.0);
+                                self.robots[i].crossing_buffs.insert("rmul_tunnel".into(), now + duration);
+                                self.robots[i].rmul_tunnel_card = Some((side.into(), z.id.clone(), now));
+                                self.event("terrain_buff", json!({"robot":self.robots[i].id,"kind":"rmul_tunnel"}));
+                            }
+                            _ => {
+                                self.robots[i].rmul_tunnel_card = Some((side.into(), z.id.clone(), now));
+                            }
+                        }
+                    }
+                }
+            }
             self.robots[i].last_raw_zones = raw;
             let release = n(&self.rules["buffs"], "release_delay_s");
             self.robots[i].zone_contacts.retain(|_, time| now - *time <= release + 1e-8);
-            let clears = self.contacted_zone_2027(i, "base", Some(&r.team))
-                || self.contacted_zone_2027(i, "supply", Some(&r.team))
-                || ["red", "blue"].iter().any(|o| self.fully_controls(&format!("{o}_outpost"), &r.team) && self.contacted_zone_2027(i, "outpost", Some(o)));
-            if r.alive && r.weak && clears && r.weak_until.map(|until| now + 1e-8 >= until).unwrap_or(true) {
-                let actor = &mut self.robots[i];
-                actor.weak = false;
-                actor.weak_until = None;
-                // Respawn protection then ends, but not before 10 s after the respawn.
-                let floor = (actor.respawned_at + n(&self.rules["respawn"], "weak_clear_invulnerability_min_s")).max(now);
-                actor.invulnerable_until = actor.invulnerable_until.min(floor);
+            if self.is_rmul() {
+                if r.alive && r.weak && self.contacted_zone_2027(i, "supply", Some(&r.team)) {
+                    let actor = &mut self.robots[i];
+                    actor.weak = false;
+                    actor.weak_until = None;
+                    actor.invulnerable_until = now;
+                    actor.invulnerable = false;
+                }
+            } else {
+                let clears = self.contacted_zone_2027(i, "base", Some(&r.team))
+                    || self.contacted_zone_2027(i, "supply", Some(&r.team))
+                    || ["red", "blue"].iter().any(|o| self.fully_controls(&format!("{o}_outpost"), &r.team) && self.contacted_zone_2027(i, "outpost", Some(o)));
+                if r.alive && r.weak && clears && r.weak_until.map(|until| now + 1e-8 >= until).unwrap_or(true) {
+                    let actor = &mut self.robots[i];
+                    actor.weak = false;
+                    actor.weak_until = None;
+                    // Respawn protection then ends, but not before 10 s after the respawn.
+                    let floor = (actor.respawned_at + n(&self.rules["respawn"], "weak_clear_invulnerability_min_s")).max(now);
+                    actor.invulnerable_until = actor.invulnerable_until.min(floor);
+                }
             }
         }
         // Card occupancy: central cards are exclusive between teams; fortress cards take one own robot.
@@ -1011,7 +1234,8 @@ impl Engine {
                     let r = &self.robots[*i];
                     let own = z.owner.as_deref() == Some(&r.team);
                     let permitted = match z.kind.as_str() {
-                        "supply" | "high_point" | "resource" | "workbench" => own,
+                        "supply" | "resource" | "workbench" => own,
+                        "high_point" => own || self.is_rmul(),
                         "assembly" => own && r.role == "heavy",
                         "base" | "outpost" => true,
                         "fortress" => {
@@ -1072,6 +1296,9 @@ impl Engine {
             if held.contains_key("tunnel_through") {
                 cooling = cooling.max(n(&self.rules["buffs"]["crossings"]["tunnel_through"], "cooling_multiplier"));
             }
+            if held.contains_key("rmul_tunnel") {
+                cooling = cooling.max(n(&self.rules["buffs"], "tunnel_cooling_multiplier"));
+            }
             if let Some(p) = self.posture_effect(&r) {
                 defense = defense.max(n(&p, "defense"));
                 vuln = vuln.max(n(&p, "vulnerability"));
@@ -1087,8 +1314,9 @@ impl Engine {
                     let own = zone.owner.as_deref() == Some(&team);
                     match zone.kind.as_str() {
                         "base" if own => defense = defense.max(n(&self.rules["buffs"], "base_defense")),
-                        "high_point" if own => defense = defense.max(n(&self.rules["buffs"], "high_point_defense")),
+                        "high_point" if own || self.is_rmul() => defense = defense.max(n(&self.rules["buffs"], "high_point_defense")),
                         "central" => defense = defense.max(n(&self.rules["buffs"], "central_defense")),
+                        "tunnel_buff" => {}
                         "assembly" => {
                             // Protection is positional now, so the bay only records how long a heavy
                             // spent working under it; nothing gates on this any more.
@@ -1101,7 +1329,7 @@ impl Engine {
                             let f = &self.rules["buffs"]["fortress"];
                             if own {
                                 defense = defense.max(n(f, "own_defense"));
-                                let drop = (self.bases[&team].max_hp - self.teams[&team].base_lowest_hp.unwrap_or(self.bases[&team].hp)).max(0.0);
+                                let drop = self.bases.get(&team).map(|b| (b.max_hp - self.teams[&team].base_lowest_hp.unwrap_or(b.hp)).max(0.0)).unwrap_or(0.0);
                                 extra = extra.max((drop / 80.0).floor().min(75.0));
                                 let cap = (100.0 + (drop / 15.0).floor()).min(500.0) as u32;
                                 let t = self.teams.get_mut(&team).unwrap();
@@ -1110,7 +1338,7 @@ impl Engine {
                                 }
                                 t.fortress_capacity = cap;
                                 t.fortress_ammo = t.fortress_ammo.min(cap);
-                            } else if !self.bases[&o].armor_open {
+                            } else if self.bases.get(&o).map(|b| !b.armor_open).unwrap_or(false) {
                                 vuln = vuln.max(n(f, "enemy_vulnerability"));
                                 let elapsed = (now - self.robots[i].fortress_last_contact).max(0.0);
                                 if elapsed <= DT + 1e-8 {
@@ -1118,7 +1346,9 @@ impl Engine {
                                 }
                                 self.robots[i].fortress_last_contact = now;
                                 if self.robots[i].fortress_hold >= n(f, "enemy_hold_to_open_base_s") - 1e-8 {
-                                    self.bases.get_mut(&o).unwrap().armor_open = true;
+                                    if let Some(b) = self.bases.get_mut(&o) {
+                                        b.armor_open = true;
+                                    }
                                     self.event("base_armor_opened", json!({"team":o,"robot":r.id,"reason":"enemy_fortress"}));
                                 }
                             }
@@ -1155,6 +1385,9 @@ impl Engine {
             return false;
         }
         let supply = self.contacted_zone_2027(i, "supply", Some(&r.team));
+        if self.is_rmul() {
+            return r.launcher != "installed" && supply;
+        }
         // The heavy works the assembly core from a fixed bay, so the bay itself protects it: standing
         // on the team's own assembly card is invulnerable whether or not a core is being worked and
         // whatever protection time has already been used, which is what a pilot expects when it
@@ -1386,8 +1619,13 @@ impl Engine {
         self.event("hit", json!({"robot":self.robots[index].id,"source":p.source,"team":p.team,"x":x,"y":y,"z":z,"damage":amount}));
         if self.robots[index].hp <= 0.0 {
             let capacity = self.buffer_capacity_2027();
+            self.robots[index].deaths_count += 1;
             // Rulebook p.74: the bar is 10 + (420 − remaining)/10 + 20 × paid revives, rounded.
-            let respawn_required = self.revive_bar_2027(index).round();
+            let respawn_required = if self.is_rmul() {
+                self.revive_bar_2027(index)
+            } else {
+                self.revive_bar_2027(index).round()
+            };
             let r = &mut self.robots[index];
             r.alive = false;
             r.weak_until = None;
@@ -1399,6 +1637,7 @@ impl Engine {
             r.vy = 0.0;
             r.crossing_buffs.clear();
             r.crossing_defense_until = 0.0;
+            r.rmul_tunnel_card = None;
             r.pending_heal = None;
             r.respawn_progress = 0.0;
             r.respawn_required = respawn_required;
@@ -1413,6 +1652,7 @@ impl Engine {
             if self.robots[index].role == "heavy" {
                 self.heavy_down(index);
             }
+            self.apply_rmul_death(index);
             self.event("destroy", json!({"robot":self.robots[index].id,"killer":p.source,"team":p.team,"x":x,"y":y,"z":z}));
         }
     }
@@ -2227,22 +2467,30 @@ impl Engine {
     pub(super) fn after_step_2027(&mut self) {
         self.update_referee_locks();
         let now = self.time();
-        self.assembly_after_step_2027();
+        if !self.is_rmul() {
+            self.assembly_after_step_2027();
+        }
         self.update_launcher_unlocks();
-        for team in ["red", "blue"] {
-            let stop = self.outposts[team].ever_destroyed || self.bases[opponent(team)].armor_open || now >= n(&self.rules["structures"], "outpost_stop_after_s");
-            let outpost = self.outposts.get_mut(team).unwrap();
-            if stop || outpost.rotation_stopped {
-                if !outpost.rotation_stopped {
-                    outpost.rotation_stopped = true;
-                    outpost.rotation_stop_at = now;
-                    outpost.rotation_stop_angle = outpost.rotation;
+        if !self.is_rmul() {
+            let stop_after = n(&self.rules["structures"], "outpost_stop_after_s");
+            let rune_direction = self.rune_direction;
+            for team in ["red", "blue"] {
+                let stop = self.outposts.get(team).map(|o| o.ever_destroyed).unwrap_or(false)
+                    || self.bases.get(opponent(team)).map(|b| b.armor_open).unwrap_or(false)
+                    || now >= stop_after;
+                let Some(outpost) = self.outposts.get_mut(team) else { continue; };
+                if stop || outpost.rotation_stopped {
+                    if !outpost.rotation_stopped {
+                        outpost.rotation_stopped = true;
+                        outpost.rotation_stop_at = now;
+                        outpost.rotation_stop_angle = outpost.rotation;
+                    }
+                    let fraction = ((now - outpost.rotation_stop_at) / 10.0).clamp(0.0, 1.0);
+                    let start = (outpost.rotation_stop_angle + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+                    outpost.rotation = (start * (1.0 - fraction)).rem_euclid(std::f64::consts::TAU);
+                } else {
+                    outpost.rotation = (outpost.rotation + 0.8 * std::f64::consts::PI * (now / 5.0).min(1.0) * DT * rune_direction).rem_euclid(std::f64::consts::TAU);
                 }
-                let fraction = ((now - outpost.rotation_stop_at) / 10.0).clamp(0.0, 1.0);
-                let start = (outpost.rotation_stop_angle + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
-                outpost.rotation = (start * (1.0 - fraction)).rem_euclid(std::f64::consts::TAU);
-            } else {
-                outpost.rotation = (outpost.rotation + 0.8 * std::f64::consts::PI * (now / 5.0).min(1.0) * DT * self.rune_direction).rem_euclid(std::f64::consts::TAU);
             }
         }
         // Sentry posture timers.
@@ -2268,11 +2516,25 @@ impl Engine {
         }
     }
     pub(super) fn check_winner_2027(&mut self) {
-        let (red, blue) = (self.bases["red"].hp, self.bases["blue"].hp);
-        if red <= 0.0 || blue <= 0.0 {
-            let winner = if red == blue { None } else { Some(if red > blue { "red" } else { "blue" }.into()) };
-            self.finish(winner, "base_destroyed");
-            return;
+        if self.is_rmul() {
+            let red_c = self.teams["red"].control.unwrap_or(0.0);
+            let blue_c = self.teams["blue"].control.unwrap_or(0.0);
+            if red_c <= 0.0 || blue_c <= 0.0 {
+                let winner = if (red_c - blue_c).abs() < 1e-9 {
+                    None
+                } else {
+                    Some(if red_c > blue_c { "red" } else { "blue" }.into())
+                };
+                self.finish(winner, "control_depleted");
+                return;
+            }
+        } else {
+            let (red, blue) = (self.bases["red"].hp, self.bases["blue"].hp);
+            if red <= 0.0 || blue <= 0.0 {
+                let winner = if red == blue { None } else { Some(if red > blue { "red" } else { "blue" }.into()) };
+                self.finish(winner, "base_destroyed");
+                return;
+            }
         }
         if self.time() < self.duration {
             return;
@@ -2292,7 +2554,7 @@ impl Engine {
         self.finish(winner, "timeout");
     }
     pub(super) fn public_rule_summary_2027(&self) -> Value {
-        json!({"season":"2027","source":self.rules["source"],"construction_source":self.rules["construction"]["source"],
+        json!({"season":self.season_key,"source":self.rules["source"],"construction_source":self.rules["construction"]["source"],
             "physical_design_revision":"construction-2027-v1","physics_hz":120,"adaptations":self.rules["adaptations"],
             "match":self.rules["match"],"profile_defaults":self.rules["profiles"]["defaults"],
             "logistics":self.rules["logistics"],"speed_limits":self.rules["speed_limits"],

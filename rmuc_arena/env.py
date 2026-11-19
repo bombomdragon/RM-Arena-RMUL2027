@@ -35,7 +35,7 @@ class ArenaEnv:
         if team_lineup is None and lineups is None and opponent_manifest:
             team_lineup = opponent_manifest.get('team_lineup')
         if season not in seasons.seasons() or isinstance(duration, bool) or not isinstance(duration, int) or not 1 <= duration <= 420:
-            raise ValueError('Use season 2026/2027 and duration in [1,420]')
+            raise ValueError('Use season 2026/2027/rmul2027 and duration in [1,420]')
         if isinstance(action_repeat, bool) or not isinstance(action_repeat, int) or not 2 <= action_repeat <= 200 or action_repeat % POLICY_INTERVAL:
             raise ValueError('action_repeat must be an even integer in [2,200]')
         if reward not in ('terminal', 'score') or not math.isfinite(score_scale) or score_scale < 0:
@@ -104,7 +104,7 @@ class ArenaEnv:
         self.actions, self.diagnostics, self.steps = [], [], 0
         self.episode += 1
         rosters = {t: [str(r['slot']) for r in frame['robots'] if r['team'] == t] for t in TEAMS}
-        self.communication = TeamCommunication(rosters)
+        self.communication = TeamCommunication(rosters, blocked_slots=(7,) if self.season == "rmul2027" else ())
         self.metadata = {'api_version':3, 'engine':'rust', 'season':self.season,
                          'rules':seasons.rules_profile(self.season), 'seed':seed, 'duration':self.duration,
                          'map':seasons.map_of(self.season), 'dt':DT, 'test_match':True,

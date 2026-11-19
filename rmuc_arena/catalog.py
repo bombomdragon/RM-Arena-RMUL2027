@@ -48,7 +48,7 @@ def resolve_strategy(value, index=None):
     if separator and source in ('bundled', 'remote', 'local'):
         key = canonical_key(name)
         if source == 'bundled':
-            path = (ROOT/'examples' if key=='gpt61_sol_max_2027' else bundled_examples())/key
+            path = (ROOT/'examples' if (key=='gpt61_sol_max_2027' or (ROOT/'examples'/key).is_dir()) else bundled_examples())/key
         elif source == 'local':
             path = data_path('submissions')/key
         else:

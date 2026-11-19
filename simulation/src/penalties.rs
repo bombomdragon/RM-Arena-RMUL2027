@@ -126,6 +126,7 @@ impl Engine {
         if self.robots[i].red_card {
             return;
         }
+        let was_alive = self.robots[i].alive;
         self.penalty_hp(i, 1.0, 0.0);
         let now = self.time();
         let r = &mut self.robots[i];
@@ -146,6 +147,9 @@ impl Engine {
         let payload =
             json!({"robot":r.id,"team":r.team,"reason":reason,"card_count":r.yellow_cards});
         self.event("red_card", payload);
+        if was_alive {
+            self.apply_rmul_death(i);
+        }
     }
     fn yellow_card(&mut self, i: usize, reason: &str) {
         if self.robots[i].red_card {
@@ -287,8 +291,15 @@ impl Engine {
                 "forfeit" => {
                     let team = c["team"].as_str().unwrap();
                     let other = if team == "red" { "blue" } else { "red" };
-                    let damage = self.bases[team].hp;
-                    self.bases.get_mut(team).unwrap().hp = 0.0;
+                    let damage = self.bases.get(team).map(|b| b.hp).unwrap_or(0.0);
+                    if let Some(base) = self.bases.get_mut(team) {
+                        base.hp = 0.0;
+                    }
+                    if let Some(t) = self.teams.get_mut(team) {
+                        if t.control.is_some() {
+                            t.control = Some(0.0);
+                        }
+                    }
                     let t = self.teams.get_mut(other).unwrap();
                     t.attack_damage += damage;
                     t.score = t.attack_damage;

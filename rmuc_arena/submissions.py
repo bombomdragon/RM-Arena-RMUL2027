@@ -261,7 +261,7 @@ def save_submission(output, mode, entries, robot=None, team_lineup=None, showcas
         raise ValueError("Submission exists; choose a new version name")
     if season is None:
         season = season_rules.infer_season(team_lineup.keys()) if mode == "team" and team_lineup else \
-            season_rules.infer_season(entries.keys()) if mode in ("squad", "distributed") and len(entries) in (5, 6) else season_rules.LEGACY_SEASON
+            season_rules.infer_season(entries.keys()) if mode in ("squad", "distributed") and len(entries) in (3, 5, 6) else season_rules.LEGACY_SEASON
     lineup=normalize_team_lineup(team_lineup,season) if mode=='team' else None
     if mode!='team' and team_lineup is not None:raise ValueError('A shared team lineup is only for team mode')
     if set(entries) != submission_keys(mode, robot, season=season):

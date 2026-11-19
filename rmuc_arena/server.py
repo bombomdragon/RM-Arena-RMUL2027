@@ -42,7 +42,7 @@ from .submissions import write_json, manifest_season
 from . import seasons as season_rules
 
 # The bundled baseline pair each season starts with when a request names no strategies.
-DEFAULT_PAIRS = {"2026": ("claude_opus55_xhigh_team", "claude_opus55_xhigh_hold"), "2027": ("gpt61_sol_max_2027", "gpt61_sol_max_2027")}
+DEFAULT_PAIRS = {"2026": ("claude_opus55_xhigh_team", "claude_opus55_xhigh_hold"), "2027": ("gpt61_sol_max_2027", "gpt61_sol_max_2027"), "rmul2027": ("rmul2027_baseline", "rmul2027_aggressive")}
 
 # Pre-match broadcast (rule 6.4 self-check): opening, a title card per team, one camera shot per robot and a face-off.
 # frontend/src/intro.ts lays out the same segments, scaled to the duration the server announces. Every segment
@@ -69,7 +69,7 @@ class StartRequest(BaseModel):
     duration: int = Field(default=420, ge=1, le=420)
     # RMUC 2027 is the default field; RMUC 2026 stays playable with its own rules. Without a
     # map, the season of the selected strategies decides, and 2027 when nothing is selected.
-    map: Literal["rmuc2027", "rmuc2026"] | None = None
+    map: Literal["rmuc2027", "rmuc2026", "rmul2027"] | None = None
     mode: Literal["standard", "deck"] = "standard"
     red_deck: list[str] = Field(default_factory=list)
     blue_deck: list[str] = Field(default_factory=list)
@@ -91,7 +91,7 @@ class StartRequest(BaseModel):
 
 class BattleSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    season: Literal["2026", "2027"]
+    season: Literal["2026", "2027", "rmul2027"]
     values: dict[str, StrictFloat]
 
 
@@ -104,7 +104,7 @@ class FreeControllerRequest(BaseModel):
 class DeckPresetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1,max_length=64)
-    map: Literal["rmuc2027", "rmuc2026"] | None = None
+    map: Literal["rmuc2027", "rmuc2026", "rmul2027"] | None = None
     decks: dict[Literal["red","blue"],list[str]]
     controllers: dict[Literal["red","blue"],FreeControllerRequest]
     replace: bool = False
@@ -145,7 +145,7 @@ class SubmissionRequest(BaseModel):
     robot: int | None = None
     entries: dict[str, str]
     team_lineup: dict[str,int] | None = None
-    season: Literal["2026","2027"] | None = None
+    season: Literal["2026","2027","rmul2027"] | None = None
     # The agent-written presentation is required; the questionnaire classifies the upload.
     showcase: str = Field(min_length=2, max_length=65536)
     profile: dict | None = None
@@ -174,7 +174,7 @@ class CustomModelRequest(BaseModel):
 class TeamBriefingRequest(BaseModel):
     model_config=ConfigDict(extra='forbid')
     team_lineup:dict[str,int]
-    season:Literal["2026","2027"]|None=None
+    season:Literal["2026","2027","rmul2027"]|None=None
 
 
 class TeamWorkspaceRequest(TeamBriefingRequest):
@@ -191,7 +191,7 @@ class TrainingWorkspaceRequest(BaseModel):
     robot: int | None = None
     minutes: int = Field(default=90, ge=1, le=1440)
     team_lineup: dict[str,int] | None = None
-    season: Literal["2026","2027"] | None = None
+    season: Literal["2026","2027","rmul2027"] | None = None
 
 
 class RefereeRequest(BaseModel):
@@ -674,7 +674,7 @@ def create_app(sandbox="docker",submission_root=None,data_root=None,test_mode=Fa
         # Heat each round adds, so the cockpit can stop firing before the barrel crosses its limit.
         heat={}
         for season in season_rules.seasons():
-            profile="rulebook_2027" if season=="2027" else "rulebook"
+            profile=season_rules.season(season).get("rules_key","rulebook_2027" if season=="2027" else "rulebook")
             ammo=rules_config.get(profile,{}).get("economy",{}).get("ammo",{})
             economy[season]={kind:{"local":{"batch":rule.get("local_batch",0),"cost":rule.get("local_cost",0),"cap":rule.get("team_purchase_cap",0)},
                                     "remote":{"batch":rule.get("remote_batch",0),"cost":rule.get("remote_cost",0),"cap":rule.get("team_purchase_cap",0)}}
@@ -710,7 +710,7 @@ def create_app(sandbox="docker",submission_root=None,data_root=None,test_mode=Fa
         return state
 
     @app.get("/api/battle-settings")
-    def battle_settings(season: Literal["2026", "2027"] = "2027"):
+    def battle_settings(season: Literal["2026", "2027", "rmul2027"] = "2027"):
         return service.settings.get(season)
 
     @app.post("/api/battle-settings")
@@ -811,7 +811,7 @@ def create_app(sandbox="docker",submission_root=None,data_root=None,test_mode=Fa
         return FileResponse(ROOT/"docs/STRATEGY_SHOWCASE.md",media_type="text/markdown; charset=utf-8")
 
     @app.get("/api/agent-guide")
-    def agent_guide(mode:Literal["team","robot","distributed","adaptive"]="team",robot:int|None=None,lang:Literal["zh","en"]="zh",season:Literal["2026","2027"]|None=None):
+    def agent_guide(mode:Literal["team","robot","distributed","adaptive"]="team",robot:int|None=None,lang:Literal["zh","en"]="zh",season:Literal["2026","2027","rmul2027"]|None=None):
         try:
             path=guide_path(mode,robot,lang,season_rules.request_season(season,mode,robot))
         except ValueError as error:
@@ -819,11 +819,11 @@ def create_app(sandbox="docker",submission_root=None,data_root=None,test_mode=Fa
         return FileResponse(path,media_type="text/markdown; charset=utf-8")
 
     @app.get("/api/catalog")
-    def catalog(season:Literal["2026","2027"]|None=None):
+    def catalog(season:Literal["2026","2027","rmul2027"]|None=None):
         return {key:{k:v for k,v in value.items() if k!="path"} for key,value in service.catalog(season=season).items()}
 
     @app.get("/api/robot-catalog")
-    def robot_catalog(season:Literal["2026","2027"]|None=None):
+    def robot_catalog(season:Literal["2026","2027","rmul2027"]|None=None):
         return {key:{k:v for k,v in value.items() if k!="path"} for key,value in service.catalog(("adaptive",),season).items()}
 
     @app.get("/api/deck-presets")
@@ -934,7 +934,7 @@ def create_app(sandbox="docker",submission_root=None,data_root=None,test_mode=Fa
         return {"deleted": model_id}
 
     @app.get("/api/arena-preview")
-    def arena_preview(map: Literal["rmuc2027", "rmuc2026"] = "rmuc2027"):
+    def arena_preview(map: Literal["rmuc2027", "rmuc2026", "rmul2027"] = "rmuc2027"):
         return {"frame": service.preview(map)}
 
     @app.get("/api/maps")

@@ -247,7 +247,7 @@ impl Engine {
                     let p = [d.x, d.y, d.z];
                     let mut contact = None;
                     for team in ["red", "blue"] {
-                        let b = &self.outposts[team];
+                        let Some(b) = self.outposts.get(team) else { continue; };
                         // Plates use the strike radius so the strike window stays reachable.
                         let hit = outpost_overlap(b, p, radius, hz)
                             .filter(|(_, armor)| *armor)

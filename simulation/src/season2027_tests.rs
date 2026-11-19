@@ -1117,3 +1117,73 @@ fn a_finished_assembly_leaves_the_core_re_initialising_for_five_seconds() {
     assert!(m.assemblies["red"].attempt > finished.attempt);
     assert_eq!(m.assembly_snapshots()["red"]["repeat_cooldown_s"].as_f64().unwrap(), 0.0);
 }
+
+#[test]
+fn rmul2027_3v3_capture_drain_and_finish() {
+    let mut m = Engine::new(42, 300.0, "rmul2027").unwrap();
+    assert_eq!(m.robots.len(), 6);
+    assert_eq!((m.arena.width, m.arena.height), (12.0, 8.0));
+    assert!(m.bases.is_empty() && m.outposts.is_empty());
+    let red_slots: Vec<u32> = m.robots.iter().filter(|r| r.team == "red").map(|r| r.slot).collect();
+    assert_eq!(red_slots, vec![1, 3, 7]);
+    assert_eq!(m.teams["red"].control, Some(600.0));
+    assert_eq!(m.teams["blue"].control, Some(600.0));
+    let h = &m.robots[robot(&m, "red-1")];
+    let inf = &m.robots[robot(&m, "red-3")];
+    let sen = &m.robots[robot(&m, "red-7")];
+    assert_eq!((h.max_hp, h.power_limit, h.ammo), (100.0, 50.0, 0));
+    assert_eq!((inf.max_hp, inf.power_limit, inf.max_heat, inf.cooling_rate, inf.ammo), (350.0, 75.0, 88.0, 24.0, 0));
+    assert_eq!((sen.max_hp, sen.power_limit, sen.max_heat, sen.cooling_rate, sen.ammo, sen.posture.as_str()), (400.0, 100.0, 260.0, 30.0, 750, ""));
+    for id in ["red_control", "centre_control", "blue_control"] {
+        assert_eq!(m.positions[id].controller, "neutral");
+    }
+
+    // Place a Red infantry on centre_control (capture_s = 5.0s -> 100+ ticks).
+    let r3 = robot(&m, "red-3");
+    let c = zone_center(&m, "centre_control");
+    place(&mut m, r3, c[0], c[1]);
+    for _ in 0..105 {
+        m.step(&json!({}));
+    }
+    assert_eq!(m.positions["centre_control"].controller, "red");
+    assert!(m.teams["blue"].control.unwrap() < 600.0);
+    assert_eq!(m.teams["red"].control, Some(600.0));
+
+    // Stepping away: activation lapses after 2 s (3.3.5), then the 5-point progress decays 1/s.
+    place(&mut m, r3, 1.5, 4.0);
+    for _ in 0..(6.0 / DT) as usize {
+        m.step(&json!({}));
+    }
+    assert_eq!(m.positions["centre_control"].controller, "red", "still held during release delay + decay");
+    for _ in 0..(2.0 / DT) as usize {
+        m.step(&json!({}));
+    }
+    assert_eq!(m.positions["centre_control"].controller, "neutral");
+
+    // Killing blue-3 deducts 10 control from blue and sets progressive revive bar to 5.0s.
+    let blue_ctrl_before = m.teams["blue"].control.unwrap();
+    slain(&mut m, "blue-3");
+    let b3 = robot(&m, "blue-3");
+    assert!(!m.robots[b3].alive);
+    assert_eq!(m.robots[b3].respawn_required, 5.0);
+    assert!((blue_ctrl_before - m.teams["blue"].control.unwrap() - 10.0).abs() < 1e-6);
+
+    // Occupy all three control zones with Red robots until Blue control drains to 0 (rate 3/s).
+    let r1 = robot(&m, "red-1");
+    let r7 = robot(&m, "red-7");
+    let rc = zone_center(&m, "red_control");
+    let bc = zone_center(&m, "blue_control");
+    place(&mut m, r1, rc[0], rc[1]);
+    place(&mut m, r3, c[0], c[1]);
+    place(&mut m, r7, bc[0], bc[1]);
+    for _ in 0..5000 {
+        m.step(&json!({}));
+        if m.status == "finished" {
+            break;
+        }
+    }
+    assert_eq!(m.status, "finished");
+    assert_eq!(m.winner.as_deref(), Some("red"));
+    assert_eq!(m.reason.as_deref(), Some("control_depleted"));
+    assert_eq!(m.teams["blue"].control, Some(0.0));
+}

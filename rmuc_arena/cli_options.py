@@ -9,7 +9,8 @@ from .models import normalize_team_lineup
 from .submissions import load_submission, manifest_season
 
 DEFAULTS = {'2027':('gpt61_sol_max_2027','gpt61_sol_max_2027'),
-            '2026':('claude_opus55_xhigh_team','claude_opus55_xhigh_hold')}
+            '2026':('claude_opus55_xhigh_team','claude_opus55_xhigh_hold'),
+            'rmul2027':('rmul2027_baseline','rmul2027_aggressive')}
 
 
 def json_value(value, base=None):

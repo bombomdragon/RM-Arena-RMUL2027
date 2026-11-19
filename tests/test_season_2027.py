@@ -76,7 +76,7 @@ class SeasonRulesTests(unittest.TestCase):
             self.assertEqual(observation["rulebook_rules"]["logistics"]["video_resolution_px"], [1920, 1080])
 
     def test_sdk_reads_both_seasons(self):
-        self.assertEqual(set(sdk.RULES_BY_SEASON), {"2026", "2027"})
+        self.assertEqual(set(sdk.RULES_BY_SEASON), {"2026", "2027", "rmul2027"})
         arena = sdk.ARENAS_BY_SEASON["2027"]
         for zone in arena["zones"]:
             if zone.get("polygon"):
@@ -111,7 +111,7 @@ class SeasonApiTests(unittest.TestCase):
         self.assertEqual(models["default_team_lineup"], {"1": 2711, "3": 2731, "4": 2732, "6": 2761, "7": 2771})
         self.assertFalse(models["models"]["1"]["seasons"]["2027"]["legal"])
         self.assertTrue(models["models"]["1"]["seasons"]["2027"]["issues"])
-        self.assertEqual(set(self.client.get("/api/maps").json()), {"rmuc2026", "rmuc2027"})
+        self.assertEqual(set(self.client.get("/api/maps").json()), {"rmuc2026", "rmuc2027", "rmul2027"})
         catalog = self.client.get("/api/catalog", params={"season": "2027"}).json()
         self.assertEqual({catalog[k]["season"] for k in catalog}, {"2027"})
         self.assertIn("claude_opus55_xhigh_2027_team", catalog)

@@ -55,8 +55,9 @@ def validate_messages(messages, sender, dynamic=False, limit=MAX_MESSAGE_BYTES):
 
 
 class TeamCommunication:
-    def __init__(self, rosters=None, slots=SLOTS):
+    def __init__(self, rosters=None, slots=SLOTS, blocked_slots=()):
         self.slots = tuple(str(slot) for slot in slots)
+        self.blocked_slots = {str(slot) for slot in blocked_slots}
         self.rosters = rosters or {team: self.slots for team in ("red", "blue")}
         self.inboxes = self.empty_inboxes()
 
@@ -67,8 +68,12 @@ class TeamCommunication:
         """Replace consumed inboxes atomically, in fixed team/slot/message order."""
         next_inboxes, records = self.empty_inboxes(), []
         for team, sender, messages in sorted(outgoing,key=lambda entry:(0 if entry[0]=="red" else 1,int(entry[1]))):
+            if str(sender) in self.blocked_slots:
+                continue
             for message in messages:
-                recipients = [str(slot) for slot in self.rosters[team] if str(slot) != sender] if message["to"] == "all" else [message["to"]] if message["to"] in next_inboxes[team] else []
+                recipients = [str(slot) for slot in self.rosters[team] if str(slot) != sender and str(slot) not in self.blocked_slots] if message["to"] == "all" else [message["to"]] if message["to"] in next_inboxes[team] and str(message["to"]) not in self.blocked_slots else []
+                if not recipients:
+                    continue
                 common = {"from": f"{team}-{sender}", "tick": tick,
                           "delivery_tick": delivery_tick, "data": message["data"]}
                 for recipient in recipients:

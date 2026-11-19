@@ -568,7 +568,7 @@ class Battle:
         self.lob_ready = {}
         # The solved lob aim a `lob_ready` deadline belongs to, so a moving reticle re-arms the climb.
         self.lob_ready_aim = {}
-        self.communication = TeamCommunication({team:[d["slot"] for d in items] for team, items in lineups.items()} if lineups else None, slot_ids)
+        self.communication = TeamCommunication({team:[d["slot"] for d in items] for team, items in lineups.items()} if lineups else None, slot_ids, blocked_slots=(7,) if season == "rmul2027" else ())
         if self.deck_mode:
             self.metadata.update({"lineups":lineups,"test_match":True,"roster":{team:[d["slot"] for d in items] for team,items in lineups.items()}})
         else:
