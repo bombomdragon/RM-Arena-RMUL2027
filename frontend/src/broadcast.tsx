@@ -1,7 +1,7 @@
 import {strategyDisplayName,strategyName} from './strategyIdentity';
 import {useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 'react';
 import type {Frame,MatchEvent,Metadata,Robot,TeamId} from './types';
-import {MODE_LABELS,baseProtected,frameSeason,outpostHolder} from './types';
+import {MODE_LABELS,SEASON_LABELS,baseProtected,frameSeason,is2027Rules,outpostHolder} from './types';
 import {TEAM_LABEL,TEAMS,other,robotName,type MatchStats} from './matchStats';
 import {clock} from './media';
 import {KillAnnouncer,type KillAnnouncement,type KillHighlight} from './killAnnouncements';
@@ -30,9 +30,9 @@ export class BroadcastDirector{
   frame(f:Frame){
     const last=this.last;this.last=f;if(!last||f.tick<=last.tick||f.status!=='running'&&f.status!=='finished')return;
     for(const team of TEAMS){
-      const was=last.outposts?.[team],now=f.outposts?.[team];
-      if(was&&now&&was.hp>0&&now.hp<=0){this.push({kind:'banner',team,life:2600,title:`${TEAM_LABEL[team]}前哨站被摧毁`});if(f.bases[team].hp>0)this.push({kind:'banner',team,life:2600,title:`${TEAM_LABEL[team]}基地无敌解除`},2700);}
-      if(!last.bases[team].armor_open&&f.bases[team].armor_open)this.push({kind:'banner',team,life:2800,title:`${TEAM_LABEL[team]}基地护甲打开`});
+      const was=last.outposts?.[team],now=f.outposts?.[team],base=f.bases?.[team],wasBase=last.bases?.[team];
+      if(was&&now&&was.hp>0&&now.hp<=0){this.push({kind:'banner',team,life:2600,title:`${TEAM_LABEL[team]}前哨站被摧毁`});if((base?.hp??0)>0)this.push({kind:'banner',team,life:2600,title:`${TEAM_LABEL[team]}基地无敌解除`},2700);}
+      if(wasBase&&base&&!wasBase.armor_open&&base.armor_open)this.push({kind:'banner',team,life:2800,title:`${TEAM_LABEL[team]}基地护甲打开`});
       // The enemy stepping onto this side's fortress card: same centre banner as a destroyed
       // outpost, so the defender is told at once that the base armor countdown has started.
       const capture=fortressCapture(f,team);
@@ -142,7 +142,7 @@ function MiniMap({frame,selected,team,ghosts}:{frame:Frame;selected:string;team?
   return <svg className="bc-minimap" viewBox={`0 0 ${W} ${H}`} aria-label="战术小地图"><rect width={W} height={H} fill="#0d1218"/>
     {a.terrain.filter(t=>t.elevation>0).map((t,i)=>t.polygon?<polygon key={i} points={t.polygon.map(([px,py])=>`${x(px)},${y(py)}`).join(' ')} fill="#3a4350" stroke="#56606d" strokeWidth=".6"/>:<rect key={i} x={x(t.x)} y={y(t.y)} width={x(t.w)} height={y(t.h)} fill="#3a4350"/>)}
     {a.obstacles.map((w,i)=><rect key={i} x={x(w.x)} y={y(w.y)} width={Math.max(1,x(w.w))} height={Math.max(1,y(w.h))} fill="#77818c" transform={`rotate(${(w.rotation||0)*180/Math.PI} ${x(w.x+w.w/2)} ${y(w.y+w.h/2)})`}/>)}
-    {TEAMS.map(t=>{const b=frame.bases[t],o=frame.outposts?.[t];return <g key={t}><polygon points={[0,1,2,3,4,5].map(k=>`${x(b.x)+11*Math.cos(k*Math.PI/3)},${y(b.y)+11*Math.sin(k*Math.PI/3)}`).join(' ')} className={`mm-base ${t}`}/>{o&&<rect x={x(o.x)-4} y={y(o.y)-4} width="8" height="8" className={`mm-outpost ${outpostHolder(frame,t)} ${o.hp<=0?'down':''}`}/>}</g>;})}
+    {TEAMS.map(t=>{const b=frame.bases?.[t],o=frame.outposts?.[t];return <g key={t}>{b&&<polygon points={[0,1,2,3,4,5].map(k=>`${x(b.x)+11*Math.cos(k*Math.PI/3)},${y(b.y)+11*Math.sin(k*Math.PI/3)}`).join(' ')} className={`mm-base ${t}`}/>}{o&&<rect x={x(o.x)-4} y={y(o.y)-4} width="8" height="8" className={`mm-outpost ${outpostHolder(frame,t)} ${o.hp<=0?'down':''}`}/>}</g>;})}
     {bots.filter(r=>r.alive||r.role==='aerial').map(r=><g key={r.id} transform={`translate(${x(r.x)},${y(r.y)})`} className={`mm-bot ${r.team} ${r.id===selected?'sel':''}`}><circle r={r.id===selected?9:7.5}/><text y="3.6" textAnchor="middle">{r.slot}</text></g>)}
   </svg>;
 }
@@ -172,19 +172,19 @@ export function BroadcastHud({frame,metadata,stats,director,images,selected,onSe
   const wins=(t:TeamId)=>frame.status==='finished'&&frame.winner===t?1:0;
   const banner=director.active('banner',now).at(-1),toast=director.active('toast',now).at(-1),kills=director.active('kill',now).slice(-4);
   const image=(r?:Robot)=>r?images[`${r.model_asset}|${r.team}`]:undefined,find=(id?:string)=>frame.robots.find(r=>r.id===id);
-  // RMUC 2027: control positions decide base invulnerability; control degree decides timeouts.
-  const season=frameSeason(frame),position=(team:TeamId,kind:'outpost'|'base')=>frame.positions?.[`${team}_${kind}`];
+  // RMUC 2027 / RMUL 2027: control positions decide base invulnerability; control degree decides timeouts.
+  const season=frameSeason(frame),is2027=is2027Rules(season),position=(team:TeamId,kind:'outpost'|'base'|'control')=>frame.positions?.[`${team}_${kind}`];
   const control=(t:TeamId)=>Math.floor(frame.teams[t].control??0);
-  const positionLabel=(team:TeamId)=>{const p=position(team,'outpost');if(!p)return null;const mine=p.controller===team;return <small className={`bc-position ${p.controller}`} title={`前哨控制点：${p.controller==='red'?'红方':'蓝方'}${p.control==='full'?'完全':'临时'}控制`}>{mine?'⚑':'⚐'} {p.control==='full'?'完全':'临时'}{mine?'':'·失守'}</small>;};
+  const positionLabel=(team:TeamId)=>{const p=position(team,'outpost')??position(team,'control');if(!p)return null;const mine=p.controller===team;return <small className={`bc-position ${p.controller}`} title={`控制点：${p.controller==='red'?'红方':p.controller==='blue'?'蓝方':'中立'}${p.control==='full'?'完全':p.control==='temporary'?'临时':'未'}控制`}>{mine?'⚑':'⚐'} {p.control==='full'?'完全':p.control==='temporary'?'临时':'中立'}{mine||p.controller==='neutral'?'':'·失守'}</small>;};
   const invulnerable=(team:TeamId)=>baseProtected(frame,team);
   return <Stage compactable>
     <div className="bc-top">
-      {TEAMS.map(team=>{const base=frame.bases[team],op=frame.outposts?.[team],t=frame.teams[team] as {rebuild_credits?:number};return <div key={team} className={`bc-side ${team}`}>
-        <div className="bc-outpost"><span>前哨站 <i className="bc-tower"/></span><b className={op&&op.hp<=0?'down':`held-${outpostHolder(frame,team)}`} title={outpostHolder(frame,team)===team?undefined:`已被${TEAM_LABEL[outpostHolder(frame,team)]}重建占领`}>{op?Math.ceil(Math.max(0,op.hp)):'—'}</b>{season==='2027'?positionLabel(team):<small title="可用重建次数">⚒ {t.rebuild_credits??0}</small>}</div>
+      {TEAMS.map(team=>{const base=frame.bases?.[team],op=frame.outposts?.[team],t=frame.teams[team] as {rebuild_credits?:number};return <div key={team} className={`bc-side ${team}`}>
+        {op?<div className="bc-outpost"><span>前哨站 <i className="bc-tower"/></span><b className={op.hp<=0?'down':`held-${outpostHolder(frame,team)}`} title={outpostHolder(frame,team)===team?undefined:`已被${TEAM_LABEL[outpostHolder(frame,team)]}重建占领`}>{Math.ceil(Math.max(0,op.hp))}</b>{is2027?positionLabel(team):<small title="可用重建次数">⚒ {t.rebuild_credits??0}</small>}</div>:is2027&&<div className="bc-outpost"><span>控制度</span><b>{control(team)}</b>{positionLabel(team)}</div>}
         <div className="bc-team-main">
           <div className="bc-team-name"><span>{teamName(metadata,team)}</span><small>{teamEmblem(metadata,team)==='mixed'?`${teamAgents(metadata,team).length} 个 Agent 混合`:teamAgents(metadata,team).length?agentLabel(teamAgents(metadata,team)[0]):metadata?MODE_LABELS[metadata.teams[team].mode]:''}</small></div>
-          <div className="bc-basebar"><i className="fill" style={{width:`${pct(base.hp,base.max_hp)}%`}}/><span className="bc-basebar-hex"/><b>{Math.ceil(Math.max(0,base.hp))}</b><i className="bc-base-icon"/></div>
-          <div className="bc-team-sub">{(()=>{const capture=fortressCapture(frame,team);return capture?<FortressRing capture={capture} team={team}/>:null;})()}<span title="基地护盾">⛨ {Math.ceil(base.shield_hp||0)}</span>{invulnerable(team)&&base.hp>0&&<span className="bc-invuln">基地无敌</span>}{base.armor_open&&<span className="bc-armor">护甲展开</span>}</div>
+          {base?<div className="bc-basebar"><i className="fill" style={{width:`${pct(base.hp,base.max_hp)}%`}}/><span className="bc-basebar-hex"/><b>{Math.ceil(Math.max(0,base.hp))}</b><i className="bc-base-icon"/></div>:<div className="bc-basebar"><i className="fill" style={{width:`${Math.min(100,control(team)/600*100)}%`}}/><b>控制 {control(team)}</b></div>}
+          <div className="bc-team-sub">{(()=>{const capture=fortressCapture(frame,team);return capture?<FortressRing capture={capture} team={team}/>:null;})()}{base&&<><span title="基地护盾">⛨ {Math.ceil(base.shield_hp||0)}</span>{invulnerable(team)&&base.hp>0&&<span className="bc-invuln">基地无敌</span>}{base.armor_open&&<span className="bc-armor">护甲展开</span>}</>}</div>
         </div>
         <TeamCrest metadata={metadata} team={team} size={70}/>
       </div>;})}
@@ -193,7 +193,7 @@ export function BroadcastHud({frame,metadata,stats,director,images,selected,onSe
         <div className="bc-clock-row"><span className="bc-wins red">{wins('red')}</span><strong>{clock(frame.remaining).replace(/^0/,'')}</strong><span className="bc-wins blue">{wins('blue')}</span></div>
         <div className="bc-adv"><i style={{width:`${share}%`}}/><em style={{left:`${share}%`}}/></div>
         <div className="bc-coins"><span className="red">{Math.floor(frame.teams.red.resources)}<small>/{Math.floor(stats.teams.red.economy)}</small></span><b title="金币" aria-label="金币">¤</b><span className="blue">{Math.floor(frame.teams.blue.resources)}<small>/{Math.floor(stats.teams.blue.economy)}</small></span></div>
-        {season==='2027'&&<div className="bc-dmg bc-control"><span>{control('red')}</span><small>CONTROL</small><span>{control('blue')}</span></div>}
+        {is2027&&<div className="bc-dmg bc-control"><span>{control('red')}</span><small>CONTROL</small><span>{control('blue')}</span></div>}
         <div className="bc-dmg"><span>{damage('red')}</span><small>DAMAGE</small><span>{damage('blue')}</span></div>
       </div>
     </div>
@@ -206,6 +206,6 @@ export function BroadcastHud({frame,metadata,stats,director,images,selected,onSe
       <span className={`bc-kill-bot ${killer?.team||other(k.team)}`}>{image(killer)&&<img src={image(killer)} alt=""/>}<em>{killer?.slot??'?'}</em></span><b>摧毁</b>
       <span className={`bc-kill-bot ${victim?.team||other(k.team)}`}>{image(victim)&&<img src={image(victim)} alt=""/>}<em>{victim?.slot??'?'}</em></span></div>;})}</div>
     {toast&&<div key={toast.key} className={`bc-toast ${toast.team}`}><span className="bc-toast-icon"><ToastIcon kind={toast.icon}/></span><div><strong>{toast.title}</strong><div className="bc-chips">{toast.chips?.map(c=><span key={c}>{c}</span>)}</div></div></div>}
-    <div className="bc-mini"><MiniMap frame={frame} selected={selected} team={pilot||undefined} ghosts={pilot?ghosts:undefined}/></div>    <div className="bc-plate"><span>对抗赛 · 策略联赛</span><b>ROBOMASTER {season}</b></div>
+    <div className="bc-mini"><MiniMap frame={frame} selected={selected} team={pilot||undefined} ghosts={pilot?ghosts:undefined}/></div>    <div className="bc-plate"><span>对抗赛 · 策略联赛</span><b>{SEASON_LABELS[season]}</b></div>
   </Stage>;
 }

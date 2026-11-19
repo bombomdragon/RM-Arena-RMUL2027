@@ -1,5 +1,5 @@
 import type {Frame,MatchEvent,Robot,TeamId} from './types';
-import {ROLE_NAMES,frameSeason} from './types';
+import {ROLE_NAMES,frameSeason,is2027Rules} from './types';
 
 export const TEAMS=['red','blue'] as const;
 export const TEAM_LABEL:Record<TeamId,string>={red:'红方',blue:'蓝方'};
@@ -56,14 +56,14 @@ export function verdict(f:Frame):{headline:string;detail:string}{
   if(reason==='forfeit')return {headline:'裁判判负',detail:'严重违规，判负方本局失利'};
   if(reason==='stopped')return {headline:'比赛手动结束',detail:'本局未计入排名'};
   const dmg=(t:TeamId)=>finite((f.teams[t] as {attack_damage?:number}).attack_damage??f.teams[t].score);
-  if(frameSeason(f)==='2027'){
+  if(is2027Rules(frameSeason(f))){
     const control=(t:TeamId)=>Math.round(finite(f.teams[t].control??undefined)*1000);
-    if(control('red')!==control('blue'))return {headline:'比赛时间耗尽',detail:'双方基地均未被击毁，累计控制度高的一方获胜'};
+    if(control('red')!==control('blue'))return {headline:'比赛时间耗尽',detail:f.bases?.red?'双方基地均未被击毁，累计控制度高的一方获胜':'累计控制度高的一方获胜'};
     if(Math.round(dmg('red'))!==Math.round(dmg('blue')))return {headline:'比赛时间耗尽',detail:'累计控制度相同，全队攻击伤害高的一方获胜'};
     if(w)return {headline:'比赛时间耗尽',detail:'累计控制度与攻击伤害相同，全队总剩余血量高的一方获胜'};
     return {headline:'双方平局',detail:'所有判定条件均相同'};
   }
-  const base=(t:TeamId)=>finite(f.bases[t]?.hp),op=(t:TeamId)=>f.outposts?.[t];
+  const base=(t:TeamId)=>finite(f.bases?.[t]?.hp),op=(t:TeamId)=>f.outposts?.[t];
   if(Math.ceil(base('red'))!==Math.ceil(base('blue')))return {headline:'比赛时间耗尽',detail:'基地剩余血量高的一方获胜'};
   const broken=(t:TeamId)=>!!op(t)?.ever_destroyed;
   if(!broken('red')&&!broken('blue')&&Math.ceil(finite(op('red')?.hp))!==Math.ceil(finite(op('blue')?.hp)))return {headline:'比赛时间耗尽',detail:'基地血量相同，前哨站剩余血量高的一方获胜'};

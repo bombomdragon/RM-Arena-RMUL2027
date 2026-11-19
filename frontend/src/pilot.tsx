@@ -1,6 +1,6 @@
 ﻿import {useEffect,useMemo,useRef,useState,type CSSProperties,type MutableRefObject} from 'react';
 import {Gamepad2,RotateCcw,X,Coins,Layers,PlugZap,Zap,Maximize2,Minimize2,Sword,ShieldCheck,Swords,Shield,Move} from 'lucide-react';
-import {ROLE_NAMES,TEAM_COLORS,type Arena,type CameraMode,type Frame,type MatchEvent,type PilotView,type Robot,type RobotHardware,type Structure,type TeamId} from './types';
+import {ROLE_NAMES,TEAM_COLORS,frameSeason,is2027Rules,type Arena,type CameraMode,type Frame,type MatchEvent,type PilotView,type Robot,type RobotHardware,type Structure,type TeamId} from './types';
 import {CameraControls} from './CameraControls';
 import {RespawnPanel} from './RespawnPanel';
 import {terrainHeight} from './terrain';
@@ -161,7 +161,7 @@ const inSupply=(robot:Robot|null,frame?:Frame)=>{
   const zones=robot.last_raw_zones??[];
   const team=robot.team,other:TeamId=team==='red'?'blue':'red';
   if(zones.includes(`${team}_base`)||zones.includes(`${team}_supply`)||zones.includes(`${team}_high_point`))return true;
-  if(frame?.season!=='2027'){
+  if(!is2027Rules(frameSeason(frame))){
     // 2026 also accepts a live own outpost, or the enemy one while it is down (first 5 minutes).
     const own=frame?.outposts?.[team],foe=frame?.outposts?.[other];
     if(own&&own.hp>0&&zones.includes(`${team}_outpost`))return true;

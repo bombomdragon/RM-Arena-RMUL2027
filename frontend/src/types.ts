@@ -2,12 +2,15 @@ import type {AgentInfo} from './agents';
 export type ControlMode = 'team' | 'robot' | 'squad' | 'distributed' | 'adaptive';
 export const MODE_LABELS: Record<ControlMode,string> = {team:'全队统筹',robot:'单机专精',squad:'单机专精组队',distributed:'多机协同',adaptive:'自由适配'};
 // Rules seasons: each has its own field, roster and construction rules (config/rules.json seasons).
-export type Season='2026'|'2027';
+export type Season='2026'|'2027'|'rmul2027';
+export type ArenaMapName='rmuc2027'|'rmuc2026'|'rmul2027';
+export const SEASONS:readonly Season[]=['2027','rmul2027','2026'];
 export const DEFAULT_SEASON:Season='2027';
-export const SEASON_SLOTS:Record<Season,readonly number[]>={'2026':[1,2,3,4,6,7],'2027':[1,3,4,6,7]};
-export const SEASON_MAPS:Record<Season,string>={'2026':'rmuc2026','2027':'rmuc2027'};
-export const SEASON_LABELS:Record<Season,string>={'2026':'RMUC 2026','2027':'RMUC 2027'};
-export const seasonOfMap=(map?:string|null):Season=>map==='rmuc2026'?'2026':'2027';
+export const SEASON_SLOTS:Record<Season,readonly number[]>={'2026':[1,2,3,4,6,7],'2027':[1,3,4,6,7],'rmul2027':[1,3,7]};
+export const SEASON_MAPS:Record<Season,ArenaMapName>={'2026':'rmuc2026','2027':'rmuc2027','rmul2027':'rmul2027'};
+export const SEASON_LABELS:Record<Season,string>={'2026':'RMUC 2026','2027':'RMUC 2027','rmul2027':'RMUL 2027 3V3'};
+export const is2027Rules=(season?:Season|string|null)=>season==='2027'||season==='rmul2027';
+export const seasonOfMap=(map?:string|null):Season=>map==='rmuc2026'?'2026':(map==='rmul2027'||map==='RMUL 2027 3V3')?'rmul2027':'2027';
 export interface SeasonLegality{legal:boolean;role:string;issues:{code:string;zh:string;en:string}[]}
 export type TeamId='red'|'blue';
 export type TeamLineup=Record<string,number>;
@@ -29,19 +32,24 @@ export interface Projectile {id:number;team:TeamId;source:string;role:Role;x:num
 export interface RebuildProgress {robot:string;elapsed:number;required:number;progress:number}
 export interface Structure {x:number;y:number;hp:number;max_hp:number;radius:number;owner?:TeamId|null;z?:number;armor_open?:boolean;armor_open_progress?:number;armor_plates?:{center:number[];normal:number[];width:number;height:number;heavy_only:boolean;weakspot:boolean}[];shield_hp?:number;rotation?:number;yaw?:number;rotation_stopped?:boolean;ever_destroyed?:boolean;rebuild?:RebuildProgress|null}
 export interface Terrain{x:number;y:number;w:number;h:number;kind:string;elevation:number;direction:number;axis:string;speed_multiplier:number;polygon?:number[][];ramp_start?:number[];ramp_end?:number[];base_elevation?:number;edge_ramp_m?:number;bump_pitch?:number;bump_height?:number;id?:string}
-export interface ControlPosition{owner:TeamId;kind:'outpost'|'base';zones:string[];controller:TeamId;control:'full'|'temporary';progress:number;active:TeamId[]}
+export interface ControlPosition{owner:TeamId|'neutral';kind:'outpost'|'base'|'control';zones:string[];controller:TeamId|'neutral';control:'full'|'temporary'|'none';progress:number;active:TeamId[]}
 export interface Arena{name:string;width:number;height:number;asset:string;layout_revision?:string;season?:Season;floor_slope_deg?:number;hangars?:Record<TeamId,{x:number;y:number;z:number;yaw:number}>;structure_assets?:{base:string;outpost:string;rune?:string;core?:string};rune?:{x:number;y:number;z:number;axis_yaw?:number;face_offset_m?:number;arm_radius_m?:number};assembly_frames?:Record<TeamId,{origin:number[];x_axis:number[];y_axis:number[];z0_m:number;initial_pose:number[]}>;obstacles:{x:number;y:number;w:number;h:number;height:number;kind:string;rotation?:number;bottom?:number}[];terrain:Terrain[];zones:{id:string;x:number;y:number;radius:number;polygon?:number[][]}[]}
 export const CURRENT_SLOTS=[1,2,3,4,6,7] as const;
-export const frameSeason=(f?:{season?:string;arena?:{name:string}}|null):Season=>f?.season==='2027'||f?.arena?.name==='rmuc2027'?'2027':'2026';
+export const frameSeason=(f?:{season?:string;arena?:{name:string}}|null):Season=>
+  f?.season==='rmul2027'||f?.arena?.name==='rmul2027'||f?.arena?.name==='RMUL 2027 3V3'
+    ?'rmul2027'
+    :f?.season==='2027'||f?.arena?.name==='rmuc2027'
+      ?'2027'
+      :'2026';
 // The base's outpost protection: in 2026 while its outpost stands (5.5.1); in 2027 while the team
 // fully controls its own outpost position (5.6.1), which an outpost rebuilt by the enemy does not give.
-export const baseProtected=(f:{season?:string;arena?:{name:string};positions?:Record<string,ControlPosition>;outposts?:Record<TeamId,Structure>},team:TeamId)=>{
-  if(frameSeason(f)==='2027'){const p=f.positions?.[`${team}_outpost`];return !!p&&p.controller===team&&p.control==='full';}
+export const baseProtected=(f:{season?:string;arena?:{name:string};positions?:Record<string,ControlPosition>;outposts?:Partial<Record<TeamId,Structure>>|null},team:TeamId)=>{
+  if(is2027Rules(frameSeason(f))){const p=f.positions?.[`${team}_outpost`];return !!p&&p.controller===team&&p.control==='full';}
   return (f.outposts?.[team]?.hp??0)>0;
 };
 // 2027 outposts change hands when destroyed (5.6.1): the team that holds the one on `team`'s half.
-export const outpostHolder=(f:{outposts?:Record<TeamId,Structure>},team:TeamId):TeamId=>f.outposts?.[team]?.owner??team;
-export interface Frame {api_version:number;engine:string;rules:string;season?:Season;positions?:Record<string,ControlPosition>;tick:number;time:number;dt:number;remaining:number;duration:number;seed:number;outposts:Frame['bases'];runes:Record<TeamId,any>;assemblies:Record<TeamId,any>;rulebook_rules:any;roster?:number[]|Record<TeamId,number[]>;status:'ready'|'running'|'finished';winner:TeamId|null;reason:string|null;arena:Arena;robots:Robot[];robot_models?:Record<string,RobotHardware>;bases:Record<TeamId,Structure>;teams:Record<TeamId,{score:number;resources:number;kills:number;captured_seconds:number;control?:number|null;attack_damage?:number;launcher_unlock_s?:number|null;completed_difficulties?:number[];next_tech_income?:number;tech_income?:number}>;zones:Record<string,{owner:TeamId|null;progress:number;contested:boolean;occupants?:string[]}>;projectiles:Projectile[];events:MatchEvent[]}
+export const outpostHolder=(f:{outposts?:Partial<Record<TeamId,Structure>>|null},team:TeamId):TeamId=>f.outposts?.[team]?.owner??team;
+export interface Frame {api_version:number;engine:string;rules:string;season?:Season;positions?:Record<string,ControlPosition>;tick:number;time:number;dt:number;remaining:number;duration:number;seed:number;outposts?:Partial<Record<TeamId,Structure>>|null;runes?:Record<TeamId,any>|null;assemblies?:Record<TeamId,any>|null;rulebook_rules:any;roster?:number[]|Record<TeamId,number[]>;status:'ready'|'running'|'finished';winner:TeamId|null;reason:string|null;arena:Arena;robots:Robot[];robot_models?:Record<string,RobotHardware>;bases:Partial<Record<TeamId,Structure>>;teams:Record<TeamId,{score:number;resources:number;kills:number;captured_seconds:number;control?:number|null;attack_damage?:number;launcher_unlock_s?:number|null;completed_difficulties?:number[];next_tech_income?:number;tech_income?:number}>;zones:Record<string,{owner:TeamId|null;progress:number;contested:boolean;occupants?:string[]}>;projectiles:Projectile[];events:MatchEvent[]}
 export interface Metadata {battle_settings?:Record<string,number>;save_mp4?:boolean;match_mode?:'standard'|'deck';season?:Season;roster?:number[]|Record<TeamId,number[]>;lineups?:Record<TeamId,{slot:number;model:number}[]>;team_lineup?:TeamLineup;red_lineup?:TeamLineup;blue_lineup?:TeamLineup;seed:number;duration:number;map:string;dt?:number;match_id?:string;engine?:string;rules?:string;teams:Record<TeamId,{name:string;version:string;mode:ControlMode;agent?:AgentInfo|null;display_name?:string;cards?:{name:string;version:string;model:number;agent?:AgentInfo|null}[]}>;
   // Per deployed robot: the agent that generated its strategy, keyed by deployment slot.
   agents?:Record<TeamId,Record<string,AgentInfo&{strategy?:string}>>;

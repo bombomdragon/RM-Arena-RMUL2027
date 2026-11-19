@@ -201,7 +201,7 @@ export function RuneBoard({feed}:{feed:MutableRefObject<RenderFeed>}){
   useFrame(()=>{const f=feed.current.frame,rune=f?.arena.rune,node=root.current;if(!f||!rune||!node||!group.current)return;
     group.current.position.set(rune.x-f.arena.width/2,rune.z+1.25,rune.y-f.arena.height/2);
     const active=(['red','blue'] as const).filter(t=>f.runes?.[t]?.status==='activating');node.style.display=active.length?'flex':'none';if(!active.length)return;
-    for(const team of ['red','blue'] as const){const s=f.runes[team],on=s?.status==='activating',el=cells.current[team];if(!el)continue;el.style.display=on?'flex':'none';if(!on)continue;
+    for(const team of ['red','blue'] as const){const s=f.runes?.[team],on=s?.status==='activating',el=cells.current[team];if(!el)continue;el.style.display=on?'flex':'none';if(!on)continue;
       el.querySelector('b')!.textContent=`${Math.round(s.ring_sum||0)}环`;el.querySelector('small')!.textContent=`${s.hit_count||0}臂`;el.querySelector('i')!.textContent=`${Math.max(0,Math.ceil((s.hit_deadline||0)-f.time))}s`;}
   });
   return <group ref={group}><Html zIndexRange={[3,1]} center style={{pointerEvents:'none'}}><div ref={root} className="rune-board" style={{display:'none'}}>
@@ -255,7 +255,8 @@ export function MechanismHud({team,kind,feed}:{team:TeamId;kind:MechanismKind;fe
     const f=feed.current.frame,g=group.current,node=root.current;if(!f||!g||!node)return;
     const display=mechanismProgress(f,team,kind);node.style.display=display?'block':'none';if(!display)return;
     if(kind==='outpost'){
-      const p=f.outposts[team];g.position.set(p.x-f.arena.width/2,(p.z||0)+2.6,p.y-f.arena.height/2);
+      const p=f.outposts?.[team];if(!p){node.style.display='none';return;}
+      g.position.set(p.x-f.arena.width/2,(p.z||0)+2.6,p.y-f.arena.height/2);
     }else{
       const p=f.arena.assembly_frames?.[team];if(!p){node.style.display='none';return;}
       g.position.set(p.origin[0]-f.arena.width/2,(p.z0_m||0)+1.8,p.origin[1]-f.arena.height/2);

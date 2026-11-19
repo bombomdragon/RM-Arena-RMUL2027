@@ -165,8 +165,7 @@ export function lockTarget(robot:Robot,robots:Robot[],arena:Arena,view:{yaw:numb
   // red outpost rebuilt by blue is a blue structure.
   const enemy:TeamId=robot.team==='red'?'blue':'red';
   const hostileOutposts=(['red','blue'] as const)
-    .map(key=>[key,frame.outposts?.[key]] as const)
-    .filter(([key,structure])=>!!structure&&structure.hp>0&&(structure.owner??key)!==robot.team&&!!structure.armor_plates?.length);
+    .flatMap(key=>{const structure=frame.outposts?.[key];return structure&&structure.hp>0&&(structure.owner??key)!==robot.team&&structure.armor_plates?.length?[[key,structure] as const]:[];});
   const base=frame.bases?.[enemy];
   if(base&&base.hp>0&&base.armor_plates?.length){
     const plate=facingPlate(base,eye);

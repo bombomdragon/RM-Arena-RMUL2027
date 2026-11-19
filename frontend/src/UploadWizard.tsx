@@ -38,7 +38,7 @@ export const TAGS:{id:StrategyTag;name:string}[]=[
   {id:'mobility',name:'高机动 / 飞坡'},{id:'comms',name:'队内通信'},{id:'focus_fire',name:'集火'},{id:'outpost_rush',name:'速拆前哨'},{id:'base_rush',name:'直取基地'},
 ];
 const MODES:{id:ControlMode;note:string}[]=[
-  {id:'team',note:'一个进程控制全队（2027 五台 / 2026 六台），共享 state'},
+  {id:'team',note:'一个进程控制全队（2027 五台 / RMUL 2027 三台 / 2026 六台），共享 state'},
   {id:'distributed',note:'一次提交每台一份策略，每台独立运行'},
   {id:'squad',note:'每台一份单机策略组成整队'},
   {id:'robot',note:'只控制一个固定编号，等待与队友组队'},

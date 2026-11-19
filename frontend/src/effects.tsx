@@ -233,7 +233,7 @@ class FxWorld{
     }else if(e.type==='outpost_rebuilt'&&e.team){
       const o=f.outposts?.[e.team];if(o)this.respawn(toWorld(f.arena,o.x,o.y,o.z??0),e.team);
     }else if(e.type==='finish'&&e.winner){
-      const b=f.bases[e.winner],home=toWorld(f.arena,b.x,b.y,b.z??0);
+      const b=f.bases?.[e.winner],home=b?toWorld(f.arena,b.x,b.y,b.z??0):toWorld(f.arena,e.winner==='red'?2:f.arena.width-2,f.arena.height/2,0);
       for(let i=0;i<4;i++)this.later.push({at:this.time+i*.38,run:()=>this.burst(home.clone().add(this.w.set(rand(-2,2),rand(4,6.5),rand(-2,2))),GLOW[e.winner!],60)});
     }else if(e.type==='skill'||e.type==='capture')this.ring(p,.2,1.6,.7,rgb('#7aebce'));
   }
@@ -350,8 +350,8 @@ export function Effects({feed}:{feed:MutableRefObject<RenderFeed>}){
     assets.uniforms.uScale.value=size.height*gl.getPixelRatio()/(2*Math.tan(((camera as THREE.PerspectiveCamera).fov||42)*Math.PI/360));
     if(f){fx.arena=f.arena;for(const e of current.events){const key=e.id||`${e.tick}:${e.type}:${e.robot}:${e.x}:${e.y}`;if(seen.current.has(key))continue;seen.current.add(key);fx.spawn(e,current,alpha);}}
     if(f)for(const team of ['red','blue'] as const){
-      const d=domeState.current[team],outpost=f.outposts?.[team],base=f.bases[team],mesh=domes.current[team],u=domeMaterials[team].uniforms;
-      if(!outpost||!mesh)continue;
+      const d=domeState.current[team],outpost=f.outposts?.[team],base=f.bases?.[team],mesh=domes.current[team],u=domeMaterials[team].uniforms;
+      if(!outpost||!base||!mesh)continue;
       const where=toWorld(f.arena,base.x,base.y,base.z??0),top=toWorld(f.arena,outpost.x,outpost.y,(outpost.z??0)+1.1);
       const shield=base.hp>0&&baseProtected(f,team)?1:0;
       if(d.hp>=0&&!current.paused){

@@ -1,13 +1,14 @@
 import {useEffect,useRef,useState} from 'react';
 import {ArrowLeft,Ban,Battery,Bot,Check,ChevronRight,Copy,Crosshair,Download,Gauge,Hammer,LockKeyhole,Rocket,Shield,ShieldCheck,Timer,Wrench,X,Zap} from 'lucide-react';
-import {ROLE_NAMES,SEASON_LABELS,SEASON_SLOTS,type Role,type RobotHardware,type Season,type TeamLineup} from './types';
+import {ROLE_NAMES,SEASONS,SEASON_LABELS,SEASON_SLOTS,type Role,type RobotHardware,type Season,type TeamLineup} from './types';
 import {RobotPreview} from './RobotPreview';
 import './teamLineup.css';
 
 export const DEFAULT_LINEUP:TeamLineup={1:1,2:2,3:3,4:4,6:6,7:7};
 // RMUC 2027: 1 heavy, 3/4 infantry, 6 aerial robot system (hangar), 7 automatic sentry.
-export const DEFAULT_LINEUPS:Record<Season,TeamLineup>={'2026':DEFAULT_LINEUP,'2027':{1:2711,3:2731,4:2732,6:2761,7:2771}};
-export const SEASON_ROLES:Record<Season,Record<number,Role>>={'2026':{1:'hero',2:'engineer',3:'infantry',4:'infantry',6:'aerial',7:'infantry'},'2027':{1:'heavy',3:'infantry',4:'infantry',6:'aerial',7:'sentry'}};
+// RMUL 2027 3V3: 1 heavy, 3 infantry, 7 automatic sentry.
+export const DEFAULT_LINEUPS:Record<Season,TeamLineup>={'2026':DEFAULT_LINEUP,'2027':{1:2711,3:2731,4:2732,6:2761,7:2771},'rmul2027':{1:2711,3:2731,7:2771}};
+export const SEASON_ROLES:Record<Season,Record<number,Role>>={'2026':{1:'hero',2:'engineer',3:'infantry',4:'infantry',6:'aerial',7:'infantry'},'2027':{1:'heavy',3:'infantry',4:'infantry',6:'aerial',7:'sentry'},'rmul2027':{1:'heavy',3:'infantry',7:'sentry'}};
 /** Whether a model passes a season's construction rules (config robot_designs[*].seasons). */
 export const legalIn=(model:RobotHardware|undefined,season:Season)=>!!model&&(model.seasons?.[season]?.legal??season==='2026');
 export const legalityIssues=(model:RobotHardware,season:Season)=>(model.seasons?.[season]?.issues||[]).map(i=>i.zh).join('；');
@@ -44,7 +45,7 @@ function ModelDetails({model,peers,season}:{model:RobotHardware;peers:RobotHardw
     {name:'电池容量',value:model.battery_wh,max:Math.max(...peers.map(m=>m.battery_wh)),unit:'Wh'}];
   return <aside className="hangar-details">
     <div className="hangar-model-heading"><span>MODEL {String(model.slot).padStart(3,'0')}</span><b>{code(model)}</b><h3>{title(model)}</h3><p>{model.focus}</p></div>
-    <div className="hangar-tags"><span>{model.chassis_type==='hangar'?'固定机库':drives[model.chassis_type]}</span><span>{model.role==='hero'?'42mm':model.role==='heavy'?'模块化42mm':model.role==='engineer'?'作业机器人':model.role==='aerial'&&model.drone?'撞击':'17mm'}</span>{model.seasons&&(['2026','2027'] as Season[]).map(s=><span key={s} className={legalIn(model,s)?'legal':'illegal'} title={legalIn(model,s)?'':legalityIssues(model,s)}>{SEASON_LABELS[s]} {legalIn(model,s)?'✓':'✗'}</span>)}</div>
+    <div className="hangar-tags"><span>{model.chassis_type==='hangar'?'固定机库':drives[model.chassis_type]}</span><span>{model.role==='hero'?'42mm':model.role==='heavy'?'模块化42mm':model.role==='engineer'?'作业机器人':model.role==='aerial'&&model.drone?'撞击':'17mm'}</span>{model.seasons&&SEASONS.map(s=><span key={s} className={legalIn(model,s)?'legal':'illegal'} title={legalIn(model,s)?'':legalityIssues(model,s)}>{SEASON_LABELS[s]} {legalIn(model,s)?'✓':'✗'}</span>)}</div>
     <div className="hangar-stat-grid">
       <div><Shield size={15}/><span>预选 Lv.1 血量</span><strong>{model.role==='aerial'?'—':stats?.hp??'—'}<small>{model.role==='aerial'?'无血量机制':'HP'}</small></strong></div>
       {model.drone?<div><Zap size={15}/><span>空中机器人</span><strong>{model.drone_count}<small>架 · {Math.round(model.drone.mass_kg*1000)} g</small></strong></div>:<div><Zap size={15}/><span>{model.role==='aerial'?'飞行峰值功率':'预选底盘功率'}</span><strong>{model.role==='aerial'?model.flight_power_max_w:stats?.power_w??'—'}<small>W</small></strong></div>}

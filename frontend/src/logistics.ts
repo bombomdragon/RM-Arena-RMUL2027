@@ -1,15 +1,15 @@
-import {frameSeason} from './types';
+import {frameSeason,is2027Rules} from './types';
 import type {TeamId} from './types';
 
 // 5.6.1 table 5-19: λ = 1 − lost base HP / 20000. The divisor is published in the season's
 // `rulebook_rules.logistics`; the fallback only covers an older snapshot without it.
 export const LOGISTICS_DIVISOR_HP=20000;
 
-interface LogisticsFrame{season?:string;arena?:{name:string};bases?:Record<string,{hp:number;max_hp:number}>;rulebook_rules?:{logistics?:{base_loss_divisor_hp?:number}}}
+interface LogisticsFrame{season?:string;arena?:{name:string};bases?:Partial<Record<TeamId,{hp:number;max_hp:number}>>;rulebook_rules?:{logistics?:{base_loss_divisor_hp?:number}}}
 
 /** The team's logistics coefficient λ, or 1 outside 2027 or before the base has any damage. */
 export function logisticsOf(frame:LogisticsFrame|null|undefined,team:TeamId){
-  if(!frame||frameSeason(frame)!=='2027')return 1;
+  if(!frame||!is2027Rules(frameSeason(frame)))return 1;
   const base=frame.bases?.[team];
   if(!base||!(base.max_hp>0)||!Number.isFinite(base.hp))return 1;
   const published=Number(frame.rulebook_rules?.logistics?.base_loss_divisor_hp);

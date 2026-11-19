@@ -164,7 +164,7 @@ function DetailView({s,onClose,onBattle,onSaved}:{s:StrategySummary;onClose:()=>
     document.addEventListener('keydown',key);
     return()=>{document.removeEventListener('keydown',key);document.body.style.overflow=overflow;previous?.focus?.({preventScroll:true});};
   },[]);
-  const arena=useArena(s.season==='2026'?'2026':'2027');
+  const arena=useArena(s.season||'2027');
   const p=authorOf(s),info=PROVIDERS[p],color=light(info.color);
   const auto=detail?!detail.showcase:!s.showcase&&!error;
   const show:Showcase|null=detail?.showcase??(auto?fallbackShowcase(s):null);

@@ -1,4 +1,4 @@
-import type {Frame,TeamId} from './types';
+import {frameSeason,is2027Rules,type Frame,type TeamId} from './types';
 import {pointInPolygon} from './terrain';
 export const FORTRESS_HOLD_SECONDS=20;
 // 2027 holds the enemy fortress for 10 s; the count only needs presence on the card once activated.
@@ -10,13 +10,13 @@ export interface FortressAlert {attacker:TeamId;defender:TeamId;robot:string;rem
 export interface FortressCapture {attacker:TeamId;defender:TeamId;robot:string;hold:number;holdSeconds:number;remaining:number;progress:number;x:number;y:number;radius:number}
 
 // The season travels on the frame; older replays only carry the arena name.
-const season2027=(f:Frame)=>f.season==='2027'||f.arena?.name==='rmuc2027';
+const season2027=(f:Frame)=>is2027Rules(frameSeason(f));
 
 // The enemy robot currently standing on `defender`'s fortress card, with its running hold. Only a
 // current, valid occupation counts: retained progress on a robot that has left the card (or one that
 // is dead, weak or still reads a stale contact) never builds a capture.
 export function fortressCapture(frame:Frame,defender:TeamId):FortressCapture|null{
- const base=frame.bases[defender],outpost=frame.outposts?.[defender],zone=frame.arena.zones.find(z=>z.id===`${defender}_fortress`),top=season2027(frame);
+ const base=frame.bases?.[defender],outpost=frame.outposts?.[defender],zone=frame.arena.zones.find(z=>z.id===`${defender}_fortress`),top=season2027(frame);
  if(frame.status!=='running'||frame.time<180||!zone||!base||base.hp<=0||base.armor_open)return null;
  // 2026 only opens the enemy card while the defender's outpost is down. In 2027 the count is live
  // once it has started (control of the outpost position gates activation, not the countdown), so a

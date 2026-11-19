@@ -1,6 +1,6 @@
 import {strategyName} from './strategyIdentity';
 import {useEffect,useId,useState,type CSSProperties} from 'react';
-import {ROLE_NAMES,type Arena,type Showcase,type StrategySummary,type StrategyTag,type StyleKey,type Tactic,type TeamId} from './types';
+import {ROLE_NAMES,SEASON_MAPS,type Arena,type Season,type Showcase,type StrategySummary,type StrategyTag,type StyleKey,type Tactic,type TeamId} from './types';
 import './gallery.css';
 
 // Visual pieces of a strategy's showcase.json (docs/STRATEGY_SHOWCASE.md): style radar, 7-minute phase timeline and tactical map.
@@ -72,18 +72,20 @@ export function PhaseTimeline({phases,total=420}:{phases:Showcase['phases'];tota
 export type MapData=Arena&{bases?:Record<TeamId,number[]>;outposts?:Record<TeamId,number[]>};
 let arenaRequest:Promise<Record<string,MapData>|null>|null=null;
 // Routes are drawn on the field of the strategy's season (RMUC 2027 by default).
-export function useArena(season:'2026'|'2027'='2027'){
+export function useArena(season:Season='2027'){
   const [arena,setArena]=useState<MapData|null>(null);
   useEffect(()=>{let live=true;arenaRequest??=fetch('/api/maps').then(r=>r.ok?r.json():null).catch(()=>null);
-    const request=arenaRequest;request.then(maps=>{if(!maps&&arenaRequest===request)arenaRequest=null;if(live)setArena((maps?.[season==='2026'?'rmuc2026':'rmuc2027']??null) as MapData|null);});return()=>{live=false;};},[season]);
+    const request=arenaRequest;request.then(maps=>{if(!maps&&arenaRequest===request)arenaRequest=null;if(live)setArena((maps?.[SEASON_MAPS[season]]??null) as MapData|null);});return()=>{live=false;};},[season]);
   return arena;
 }
-const S=40,FIELD_W=28,FIELD_H=15;
+const S=40;
 const P=(p:number[])=>`${(p[0]*S).toFixed(1)},${(p[1]*S).toFixed(1)}`;
 function hexagon(cx:number,cy:number,r:number){return [0,1,2,3,4,5].map(k=>`${(cx+r*Math.cos(k*Math.PI/3+Math.PI/6)).toFixed(1)},${(cy+r*Math.sin(k*Math.PI/3+Math.PI/6)).toFixed(1)}`).join(' ');}
 export function TacticalMap({units,arena,focus,onFocus,note}:{units:ShowcaseUnit[];arena:MapData|null;focus:number|null;onFocus?:(i:number|null)=>void;note?:string}){
+  const FIELD_W=arena?.width??28,FIELD_H=arena?.height??15;
   const id='sgm'+useId().replace(/[^\w-]/g,''),W=FIELD_W*S,H=FIELD_H*S;
-  const bases=arena?.bases??{red:[2.4,7.5],blue:[25.6,7.5]},outposts=arena?.outposts??{red:[11,11.4],blue:[17,3.6]},rune=arena?.rune?[arena.rune.x,arena.rune.y]:[14,7.5];
+  const rmul=(arena?.width??28)<20;
+  const bases=arena?.bases??(rmul?null:{red:[2.4,7.5],blue:[25.6,7.5]}),outposts=arena?.outposts??(rmul?null:{red:[11,11.4],blue:[17,3.6]}),rune=arena?.rune?[arena.rune.x,arena.rune.y]:(rmul?null:[14,7.5]);
   const terrain=[...(arena?.terrain||[])].sort((a,b)=>a.elevation-b.elevation);
   const label=(x:number,y:number,text:string,cls='')=><text className={`sg-map-label ${cls}`} x={x*S} y={y*S} textAnchor="middle">{text}</text>;
   return <svg className="sg-map" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`战术地图（己方视角，己方基地在左）：${units.map(u=>u.name).join('、')||'无路线'}`}>
@@ -99,10 +101,10 @@ export function TacticalMap({units,arena,focus,onFocus,note}:{units:ShowcaseUnit
         return t.polygon?<polygon key={i} className={cls} points={t.polygon.map(P).join(' ')} fill={fill}/>:<rect key={i} className={cls} x={t.x*S} y={t.y*S} width={t.w*S} height={t.h*S} fill={fill}/>;})}
       {(arena?.obstacles||[]).map((w,i)=><rect key={i} className="sg-map-wall" x={w.x*S} y={w.y*S} width={Math.max(2,w.w*S)} height={Math.max(2,w.h*S)} transform={`rotate(${((w.rotation||0)*180/Math.PI).toFixed(2)} ${((w.x+w.w/2)*S).toFixed(1)} ${((w.y+w.h/2)*S).toFixed(1)})`}/>)}
       <line className="sg-map-mid" x1={W/2} y1={0} x2={W/2} y2={H}/>
-      {(['red','blue'] as const).map(t=><g key={t} className={`sg-map-mark ${t}`}><polygon points={hexagon(bases[t][0]*S,bases[t][1]*S,30)}/><rect x={outposts[t][0]*S-11} y={outposts[t][1]*S-11} width="22" height="22" transform={`rotate(45 ${outposts[t][0]*S} ${outposts[t][1]*S})`}/></g>)}
-      <g className="sg-map-rune"><circle cx={rune[0]*S} cy={rune[1]*S} r="22"/><circle cx={rune[0]*S} cy={rune[1]*S} r="7"/></g>
-      <text className="sg-map-label red" transform={`translate(${.62*S} ${bases.red[1]*S}) rotate(-90)`} textAnchor="middle">己方基地</text><text className="sg-map-label blue" transform={`translate(${(FIELD_W-.62)*S} ${bases.blue[1]*S}) rotate(90)`} textAnchor="middle">敌方基地</text>
-      {label(outposts.red[0],outposts.red[1]+1.05,'己方前哨','red')}{label(outposts.blue[0],outposts.blue[1]-.72,'敌方前哨','blue')}{label(rune[0],rune[1]+1.12,'能量机关')}
+      {(['red','blue'] as const).map(t=><g key={t} className={`sg-map-mark ${t}`}>{bases?.[t]&&<polygon points={hexagon(bases[t][0]*S,bases[t][1]*S,30)}/>}{outposts?.[t]&&<rect x={outposts[t][0]*S-11} y={outposts[t][1]*S-11} width="22" height="22" transform={`rotate(45 ${outposts[t][0]*S} ${outposts[t][1]*S})`}/>}</g>)}
+      {rune&&<g className="sg-map-rune"><circle cx={rune[0]*S} cy={rune[1]*S} r="22"/><circle cx={rune[0]*S} cy={rune[1]*S} r="7"/></g>}
+      {bases?.red&&<text className="sg-map-label red" transform={`translate(${.62*S} ${bases.red[1]*S}) rotate(-90)`} textAnchor="middle">己方基地</text>}{bases?.blue&&<text className="sg-map-label blue" transform={`translate(${(FIELD_W-.62)*S} ${bases.blue[1]*S}) rotate(90)`} textAnchor="middle">敌方基地</text>}
+      {outposts?.red&&label(outposts.red[0],outposts.red[1]+1.05,'己方前哨','red')}{outposts?.blue&&label(outposts.blue[0],outposts.blue[1]-.72,'敌方前哨','blue')}{rune&&label(rune[0],rune[1]+1.12,'能量机关')}
     </g>
     {units.map((u,i)=>{const color=UNIT_COLORS[i%UNIT_COLORS.length],route=u.route||[],end=u.anchor||route[route.length-1],state=focus===null?'':focus===i?'on':'off';
       return <g key={i} className={`sg-route ${state}`} style={{'--uc':color} as CSSProperties} onMouseEnter={onFocus&&(()=>onFocus(i))} onMouseLeave={onFocus&&(()=>onFocus(null))}>
